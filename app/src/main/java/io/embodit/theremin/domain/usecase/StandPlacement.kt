@@ -18,7 +18,6 @@ import kotlin.math.exp
 object StandPlacement {
     const val CLEAR_M = 0.05f
     const val BACK_M = 0.06f
-    const val LEAN_DEG = 10f
     const val TURN_TAU_S = 0.35f
     const val DEAD_DEG = 4f
     const val MAX_OFFSET_M = 0.6f
@@ -35,13 +34,14 @@ object StandPlacement {
 
     /** One smooth turning step from [current] towards [target] over [dt] seconds (within [DEAD_DEG] it rests). */
     fun turn(current: Float, target: Float, dt: Float): Float {
-        val d = DeskRules.angle(target, current)
+        val d = PlaceRules.angle(target, current)
         if (abs(Math.toDegrees(d.toDouble())) < DEAD_DEG && dt > 0f) return current
         val k = if (dt <= 0f) 1f else 1f - exp(-dt / TURN_TAU_S)
         return current + d * k
     }
 
-    fun rotation(yaw: Float): Quat4 = Quat4.axisAngle(Vec3.UP, yaw) * Quat4.axisAngle(Vec3.RIGHT, -Math.toRadians(LEAN_DEG.toDouble()).toFloat())
+    /** Upright, yaw only (D9, v0.1.5: the 10-degree lean is gone; pitch / roll are always zero). */
+    fun rotation(yaw: Float): Quat4 = PlaceUpright.rotation(yaw)
 
     /** The panel centre: [base] moved by [offset] in the panel's own right / up at [yaw]. */
     fun position(base: Vec3, yaw: Float, offset: Pair<Float, Float>): Vec3 {

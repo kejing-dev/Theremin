@@ -41,14 +41,16 @@ app/src/main/java/io/embodit/theremin/
   domain/play/PlayMapper       hands -> pitch / volume: per-role source (hand > controller, or debug injection),
                                1-euro filter, 60 ms source cross-fade, loss rule (hold 150 ms), pinch freeze, trigger mute
   domain/play/Practice, Songs  six lessons + hold tracker; songs.json + follow-along scorer (+-40 cents, 120 ms grace)
-  domain/usecase/DeskRules     desk planes, nearest-edge snap frame (0.45 m in, shallow desk rule), hysteresis, front pose
+  domain/usecase/PlaceRules    waiting pose beside the panel, floor marker -> stand pose, analytic ray / virtual-floor hit (no real room)
+  domain/usecase/PlaceUpright  THE panel pose rule (D9): yaw from the head heading only, pitch / roll 0, 0.85 m, 15 deg below the eye line
   platform/audio/ThereminAudio AudioTrack (float, low latency, 2 bursts) + its own URGENT_AUDIO thread that reads the
                                hand / controller providers every ~4 ms block and renders (no frame, no Compose in the path);
                                SpatialAudioTrackExtension OBJECT attached to the antenna; reference tone; recordWav
   platform/input/HandInput     HandTrackingProvider PALM / WRIST / pinch (never started on the emulator)
+  (no platform/sense any more: v0.1.5 removed plane detection, plane colliders and the rest-body rule, taste D24)
   platform/input/ControllerInput  both controllers (play sources) + aiming ray, trigger, thumbstick
   ui/play/PlayViewModel        the state machine (rooms, stand pages, lessons, songs, hints, persistence, debug keys)
-  ui/play/scene/PlayScene      ECS frame system: placing ghost / snap frame / stick, drag, stand panel on the instrument,
+  ui/play/scene/PlayScene      ECS frame system: marker on the virtual floor, drag, stand panel on the instrument,
                                bead / hand tag / column / ripple highlights / pillar drawn from the mapper's last frame
   ui/play/scene/InstrumentView procedural instrument, ripples, labels (billboard about Y only), tag, column, stand
   ui/play/components           PlayStage (SpatialView + 2 pooled panels), Panels (place panel, music stand 9 pages,
@@ -68,15 +70,16 @@ freeze / cross-fade / trigger, lessons, all six songs ideal >= 95 and +60 cents 
 adb -s <serial> shell "am broadcast -a io.embodit.theremin.DEBUG -p io.embodit.theremin --es cmd '<keys>'"
 ```
 
-Keys (full list in `DebugCommands.kt`): `desk=seed|none|real`, `plane=denied`, `place=ghost|snap|down|front`,
+Keys (full list in `DebugCommands.kt`): `place=front` (`desk=`, `plane=`, `place=ghost|snap|down` are accepted and ignored since v0.1.5),
 `hand=<d|off>,<h|off>` (d = pitch point to antenna axis, h = volume point over the loop, metres), `hand=idle|off`,
 `joints=rightWrist:x,y,z;rightPalm:x,y,z;leftPalm:x,y,z` (instrument frame, full mapping), `pinch=0|1`,
 `handpath=scale|glide|vibrato|song|song60|off`, `source=hands|controllers|none`, `lesson=L1..L6`, `step=n`,
 `completetarget`, `done=1`, `song=G1..G6`, `beat=n`, `slow=0|1`, `score=n`, `seed=lessons`, `coach=1|2|3|reset`,
 `timbre=sine|classic|warm|bright`, `octave=low|mid|high`, `scale=standard|wide`, `curve=soft|linear`,
 `quantize=off|light|strong`, `mirror=0|1`, `mute=0|1`, `lang=zh|en|system`, `freeze=0|1`, `page=...`,
-`library=basics|songs`, `settings`, `menu`, `back`, `replace`, `labeltest=1`, `recordwav=<s>` (files/rec.wav),
-`pitchinfo`, `dump`, `hmd`, `bounds`, `planes`, `ui=<control>`. Log tag `Theremin`; every state change logs
+`library=basics|songs`, `settings`, `menu`, `back`, `replace`, `exit` / `exit=confirm` / `exit=cancel` (D26, the user's path),
+`labeltest=1`, `recordwav=<s>` (files/rec.wav), `pitchinfo`, `dump`, `hmd`, `bounds`, `reality` (= `planes`; D24 audit lines),
+`marker=floor`, `tomarker`, `move=dx,dy,dz`, `paneldrag=dx,dy`, `standdrag=dx,dy`, `standrecall`, `park`, `ui=<control>`. Log tag `Theremin`; every state change logs
 `STATE Sxx[+S10+S11+S18+S06]`.
 
 On the emulator (debug build) an empty injection source is present from the start, so S19 does not appear unless
@@ -87,10 +90,9 @@ On the emulator (debug build) an empty injection source is present from the star
 | Shot | Keys |
 | --- | --- |
 | S01 | launch, shoot within 1 s |
-| S03 | `desk=none` right after launch (before 5 s) |
-| S06 | `desk=none`, wait 6 s |
-| S04 | `desk=seed place=ghost` |
-| S05 | `desk=seed place=snap freeze=1` |
+| S03 | shoot right after S01 (the instrument appears beside the panel within a second); `replace` returns to it |
+| S06 | `marker=floor tomarker` (instrument on its stand on the virtual floor) |
+| S04 / S05 / S20 | gone in v0.1.5 (no desk placing, no plane access; taste D24) |
 | S07 ① ② ③ | `coach=1` / `coach=2` / `coach=3 hand=0.398,0.15` |
 | S08 | `hand=0.25,off` |
 | S09 low | `scale=standard octave=mid hand=0.319,0.12` (mi · E4, about -41 cents, bright ↓) |
@@ -106,10 +108,11 @@ On the emulator (debug build) an empty injection source is present from the star
 | S17 | `menu` |
 | S18 | `lang=en` + S09 / S12 / S16 |
 | S19 | `source=none`, wait 3 s |
-| S20 | `plane=denied` right after launch |
 | S21 | `song=G1 beat=6 handpath=song`; `song=G3 beat=14` |
 | S22 | `song=G1 score=82` |
 | mute | `mute=1` |
+| exit (D26) | `settings` then `exit` (confirmation row at the bottom of Settings); `exit=confirm` ends the process, `exit=cancel` keeps playing |
+| reality (D24) | `reality` -> logcat `REALITY planes=off mesh=off occlusion=none`, `COLLIDERS … realSurfaces=0` |
 | labels | `labeltest=1` (every 3D label shows "F↑": must read upright, not mirrored) |
 
 Audio checks: `hand=0.31,0.12 recordwav=2` then `adb pull /data/data/io.embodit.theremin/files/rec.wav` (run-as).
@@ -142,3 +145,24 @@ Audio checks: `hand=0.31,0.12 recordwav=2` then `adb pull /data/data/io.embodit.
 - Music stand: `StandPlacement` above the instrument, yaw-only towards the user, grab bar + 叫回 (`standdrag`, `standrecall`).
 - Sound: `OneEuro.skipRepeats` (the 4 ms audio loop must not re-feed one tracker point), two-stage glides, buffer
   3 bursts growing on underrun, room reverb. `PerformanceRenderTest` renders before / after into build/render.
+
+## v0.1.5 — the real room is never read (taste D24), upright panels (D9), exit in Settings (D26)
+
+Headset feedback on v0.1.4: "为什么还要检测现实物体，导致现在我一开始启动，琴和 UI 都被我桌上显示屏挡住了，还导致射线交互用不了".
+Root cause was ours (`../spatial-app-factory/apps/theremin/build/reality-audit.md`): `PlaneColliders` gave every detected
+plane (the desk monitor is a SCREEN plane) a `CollisionComponent` + `InteractableComponent`, so the system pointer hit the
+monitor instead of the content; `RestBodyUseCase` pushed the place panel off real planes; the waiting pose sat 1.4 m away
+where the monitor stands. The SDK has no default occlusion (checked core / sense 6.1.9, Manifest, scaffold).
+- Deleted: `PlaneTracker`, `PlaneColliders`, `RestBodyUseCase`, `HitSurfaceUseCase`, `PlaneSurface` / `SurfaceKind`, desk rules
+  (`DeskRules` -> `PlaceRules`), ghost / snap frame views, `landOnDesk`, rooms PLACING / NO_PLANE (states S04 / S05 / S20).
+- Colliders left: the instrument's tap box and `floorPad` (the app's virtual floor at Stage y = 0, enabled only while a marker is
+  wanted). Rays meet the virtual floor analytically (`PlaceRules.floorHit`). Content is drawn over the passthrough wherever it is.
+- Waiting pose: 0.35 m beyond the panel (was 0.70), 0.55 m to its right; drag release stays where it is (D1).
+- D9: `PlaceUpright` is the one pose rule for panels: heading yaw only, pitch / roll 0, 0.85 m, 15 deg below the eye line; the stand
+  panel lost its 10 deg lean, the place panel its 12 deg lean and gaze pitch; startup all-zero head poses are rejected
+  (`PlaceUpright.validHead`). `PlaceUprightTest` covers head down 30 / up 30 / roll 20. `headpose-audit.md` lists every head read.
+- D26: Settings ends with "退出应用" -> "退出空中琴？" [取消] [退出] -> `PlayEffect.ExitApp`: scene detached (audio, trackers, anchor
+  released), `ActivityManager.appTasks.finishAndRemoveTask()`, `closeStage()`, `exitProcess(0)` 0.4 s later. Debug `exit`,
+  `exit=confirm`, `exit=cancel`; probe names `exit_app`, `exit_confirm`, `exit_cancel`.
+- Stand panel 450 x 560 dp (was 410): every row / button / segment control is 48 dp now (B19; the 34-40 dp rows put the segment text off-centre) and the Settings page ends with the exit row; `tomarker` debug key fixed (it was unknown to the ViewModel).
+- `LAYOUT t+1/3/5s` log lines: panel / instrument distance, yaw, pitch relative to the head, panel tilt (D1 "一打开就要看得见").

@@ -404,49 +404,6 @@ internal class InstrumentView(parent: Entity, private val m: SceneMaterials, pri
     }
 }
 
-/** The 35 % ghost of cabinet, antenna and loop shown while placing or dragging. */
-internal class GhostView(parent: Entity, private val m: SceneMaterials, shared: SharedResources) {
-    val root: Entity = Entity().named("ghost")
-    private val parts = ArrayList<Entity>()
-    private var handed: Handed? = null
-    private val shared = shared
-
-    init {
-        parent.addChild(root)
-        root.enabled = false
-    }
-
-    fun build(h: Handed) {
-        if (handed == h) return
-        handed = h
-        parts.forEach { runCatching { it.destroy(true) } }
-        parts.clear()
-        val c = Instrument.CABINET
-        val ax = Instrument.antennaX(h)
-        val loop = Instrument.loopCenter(h)
-        val body = mesh("ghostBody") {
-            box(Vec3(0f, Instrument.CABINET_BOTTOM_Y + c.y / 2f, 0f), c)
-            tube(Vec3(ax, Instrument.ANTENNA_BASE_Y, 0f), Vec3(ax, Instrument.ANTENNA_TOP_Y, 0f), 0.005f)
-            torus(loop, Instrument.LOOP_RADIUS - 0.004f, 0.005f)
-        }
-        parts += root.model(shared.keep(body), m.ghost, "ghostBody")
-        root.setOpacity(GHOST_OPACITY)
-    }
-
-    fun place(pose: InstrumentPose) = root.setLocal(position = pose.center, rotation = pose.rotation)
-
-    fun setShown(on: Boolean) = root.show(on)
-
-    fun setBright(on: Boolean) = parts.forEach { it.setMaterial(if (on) m.ghostBright else m.ghost) }
-
-    fun destroy() = runCatching { root.destroy(true) }
-
-    private companion object {
-        /** On top of the sheer material: the emulator showed the 35 % material nearly opaque. */
-        const val GHOST_OPACITY = 0.45f
-    }
-}
-
 /** The marker the user sets on the floor or a desk: a 0.24 m amber ring, dim while aiming, solid once set. */
 internal class MarkerView(parent: Entity, m: SceneMaterials, shared: SharedResources) {
     private val aim: Entity = ModelEntity(shared.keep(mesh("markerAim") { ringXZ(0.10f, 0.12f) }), m.snapDashed).named("markerAim")
@@ -483,34 +440,3 @@ internal class MarkerView(parent: Entity, m: SceneMaterials, shared: SharedResou
     }
 }
 
-/** The 0.64 x 0.28 m snap frame on the desk: dashed amber 55 %, solid when snapped. */
-internal class SnapFrameView(parent: Entity, m: SceneMaterials, shared: SharedResources) {
-    private val dashed: Entity = ModelEntity(shared.keep(mesh("snapDashed") { rectOutline(0.64f, 0.28f, 0.006f, 0.04f, 0.025f) }), m.snapDashed).named("snapDashed")
-    private val solid: Entity = ModelEntity(shared.keep(mesh("snapSolid") { rectOutline(0.64f, 0.28f, 0.006f, 0f, 0f) }), m.snapSolid).named("snapSolid")
-
-    init {
-        parent.addChild(dashed)
-        parent.addChild(solid)
-        dashed.enabled = false
-        solid.enabled = false
-    }
-
-    fun show(pose: InstrumentPose?, snapped: Boolean, handed: Handed) {
-        if (pose == null) {
-            dashed.show(false)
-            solid.show(false)
-            return
-        }
-        // the frame covers the instrument's footprint with the loop reaching out (centre 4 cm towards the player)
-        val at = pose.toStage(Vec3(if (handed == Handed.RIGHT_PITCH) -0.08f else 0.08f, 0.001f, 0.035f))
-        dashed.setLocal(position = at, rotation = pose.rotation)
-        solid.setLocal(position = at, rotation = pose.rotation)
-        dashed.show(!snapped)
-        solid.show(snapped)
-    }
-
-    fun destroy() {
-        runCatching { dashed.destroy(true) }
-        runCatching { solid.destroy(true) }
-    }
-}

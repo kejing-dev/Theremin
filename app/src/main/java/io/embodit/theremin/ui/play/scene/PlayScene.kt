@@ -21,25 +21,21 @@ import com.pico.spatial.ui.foundation.gesture.SpatialTapValue
 import io.embodit.theremin.domain.model.Handed
 import io.embodit.theremin.domain.model.Instrument
 import io.embodit.theremin.domain.model.InstrumentPose
-import io.embodit.theremin.domain.model.PlaneSurface
 import io.embodit.theremin.domain.model.PointerRay
 import io.embodit.theremin.domain.model.Quat4
-import io.embodit.theremin.domain.model.SurfaceKind
 import io.embodit.theremin.domain.model.Vec3
 import io.embodit.theremin.domain.play.MapSettings
 import io.embodit.theremin.domain.play.PlayFrame
 import io.embodit.theremin.domain.play.RoleInputs
-import io.embodit.theremin.domain.usecase.Desk
-import io.embodit.theremin.domain.usecase.DeskRules
 import io.embodit.theremin.domain.usecase.GrabRules
+import io.embodit.theremin.domain.usecase.PlaceRules
+import io.embodit.theremin.domain.usecase.PlaceUpright
 import io.embodit.theremin.domain.usecase.StandPlacement
-import io.embodit.theremin.platform.anchor.InstrumentAnchor
-import io.embodit.theremin.domain.usecase.SnapFrame
 import io.embodit.theremin.platform.ThGraph
 import io.embodit.theremin.platform.ThLog
+import io.embodit.theremin.platform.anchor.InstrumentAnchor
 import io.embodit.theremin.platform.audio.ThereminAudio
 import io.embodit.theremin.platform.input.HandInput
-import io.embodit.theremin.platform.sense.PlaneTracker
 import io.embodit.theremin.platform.tracking.HeadPose
 import io.embodit.theremin.ui.play.Page
 import io.embodit.theremin.ui.play.PlayEvent
@@ -50,7 +46,6 @@ import io.embodit.theremin.ui.play.Tick
 import io.embodit.theremin.ui.play.debug.ThProbe
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,11 +67,16 @@ class PlayFrameSystem : System() {
 }
 
 /**
- * The 3D side: the instrument, the placing ghost and snap frame, the panel pool, the sound. Compose state
- * arrives through [render] (idempotent); per-frame work — placing, dragging, the bead / tag / column / ripple
- * highlights drawn from the mapper's last frame, the session tick — happens in [onFrame] only. The hand ->
- * sound path does not pass through here: the audio thread maps and plays by itself (design
- * `audio.engine`). Everything started in [attach] is stopped in [detach]. Main thread only.
+ * The 3D side: the instrument, the marker, the panel pool, the sound. Compose state arrives through [render]
+ * (idempotent); per-frame work — the marker, dragging, the bead / tag / column / ripple highlights drawn from the
+ * mapper's last frame, the session tick — happens in [onFrame] only. The hand -> sound path does not pass through
+ * here: the audio thread maps and plays by itself (design `audio.engine`). Everything started in [attach] is
+ * stopped in [detach]. Main thread only.
+ *
+ * v0.1.5 (taste D24, headset: "琴和 UI 都被我桌上显示屏挡住了，还导致射线交互用不了"): the scene reads nothing of the real
+ * room. No plane detection, no colliders on real surfaces, no "rest body" rule pushing panels off real surfaces, no
+ * desk landing. The only colliders are the app's own: the instrument's tap box and, while a marker is wanted, a
+ * virtual floor pad at the Stage floor. The content is drawn over the passthrough wherever it is.
  */
 class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> Unit) : ThProbe.SceneProbe {
 
@@ -84,7 +84,6 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     val bindTick = mutableIntStateOf(0)
 
     private val main = Handler(Looper.getMainLooper())
-    private val planes = ThGraph.planes
     private val headTracker = ThGraph.head
     private val controller = ThGraph.controller
     private val hands = ThGraph.hands
@@ -95,12 +94,11 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var contentProbe: Entity? = null
     private var shared: SharedResources? = null
     private var materials: SceneMaterials? = null
-    private var colliders: PlaneColliders? = null
     private var rig: PanelRig? = null
     private var view: InstrumentView? = null
-    private var ghost: GhostView? = null
-    private var snapView: SnapFrameView? = null
     private var markerView: MarkerView? = null
+    private var floorPad: Entity? = null
+    private var floorPadOn = false
     private var audio: ThereminAudio? = null
     private var attached = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -108,37 +106,21 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var rebuildJob: Job? = null
     private val tagMaterials = HashMap<String, Material>()
 
-    private val follower = Follower("place", PLACE_OFFSET, listOf(0.17f, 0.10f, 0.01f), Follower.MAIN_LEAN)
+    /** The place panel: 0.85 m ahead, 15 degrees below the eye line, 15 degrees to the left, upright (D9, design `panels.placePanel`). */
+    private val follower = Follower("place", PlaceUpright.DISTANCE_M, PlaceUpright.DROP_DEG, PLACE_BEARING_DEG)
 
     private var ui = PlayUiState()
     private var head = HeadPose(Vec3.ZERO, Quat4.IDENTITY)
     private var hasHead = false
+    private var headSinceMs = NEVER
     private var lastFrameMs = NEVER
     private var frameGapMs = 0L
-
-    // ---- desks and placing
-    private var desks: List<Desk> = emptyList()
-    private var desksKey = ""
-    private var seededDesk: PlaneSurface? = null
-    private var frame: SnapFrame? = null
-    private var ghostPose: InstrumentPose? = null
-    private var ghostYaw = 0f
-    private var userTurned = false
-    private var held = false
-    private var reportedSnap = false
-    private var stickRate = 0f
-    private var turnSeen = 0
     private var frontSeen = 0
-    private var turnFrom = 0f
-    private var turnTo = 0f
-    private var turnStartMs = NEVER
-    private var triggerDown = false
-    private var planesFailed = false
-    private var reportedDesks: Boolean? = null
     private var placedAtMs = NEVER
+    private var layoutLogged = 0
 
     // ---- the user's marker (v0.1.2, taste D1): where the instrument goes on "移到标记处"
-    private class Marker(val pose: InstrumentPose, val onStand: Boolean, val point: Vec3)
+    private class Marker(val pose: InstrumentPose, val point: Vec3)
 
     private var marker: Marker? = null
     private var markerTriggerDown = false
@@ -156,7 +138,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var pinchSinceMs = NEVER
     private var anchor: InstrumentAnchor? = null
     private var anchoredPose: InstrumentPose? = null
-    private var saveJob: kotlinx.coroutines.Job? = null
+    private var saveJob: Job? = null
 
     /** The stand's turn (null: face the user at once) and the user's drag offset (right, up; metres). */
     private var standYaw: Float? = null
@@ -178,7 +160,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     /** "叫回面前": the place panel slides back to its designed place in front of the user (a UI recall, D21). */
     fun recallPanel() {
         ThLog.i("PANEL recall")
-        follower.park(head, planes.all, SystemClock.elapsedRealtime())
+        if (hasHead) follower.park(head, SystemClock.elapsedRealtime())
     }
 
     // =========================================================================================
@@ -208,13 +190,14 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             rig.world(id, w, h).autoFace = false
         }
         headTracker.start()
-        // the listener goes on before the provider starts: the stick turns the ghost from the first moment
         controller.start()
         mapper.injectSource = ThProbe.enabled && HandInput.onEmulator
         ActiveScene.scene = this
         bindPanels(attachments)
         follower.reset()
-        syncPlanes(ui)
+        hasHead = false
+        headSinceMs = NEVER
+        layoutLogged = 0
         buildJob =
             scope.launch {
                 try {
@@ -225,6 +208,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
                 }
             }
         ThLog.i("STAGE root offset=${ThLog.pos(offset.domain())}")
+        ThLog.i("REALITY planes=off mesh=off occlusion=none colliders=app-only (D24)")
     }
 
     private suspend fun build(root: Entity) {
@@ -234,11 +218,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         val m = SceneMaterials(sh)
         materials = m
         frame()
-        colliders = PlaneColliders(root).also { c -> planes.all.forEach(c::upsert) }
-        frame()
-        ghost = GhostView(root, m, sh).also { it.build(ui.settings.handed) }
-        snapView = SnapFrameView(root, m, sh)
         markerView = MarkerView(root, m, sh)
+        buildFloorPad(root)
         frame()
         buildInstrument(root, m, sh, layoutOf(ui))
         attached = true
@@ -247,6 +228,27 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         render(ui, force = true)
         restoreAnchor()
         sink(PlayEvent.SceneReady)
+    }
+
+    /**
+     * The app's own, invisible tap target on the Stage floor (y = 0): gaze + pinch on it sets the marker. It is the
+     * only collider besides the instrument's, and it is switched on only while a marker is wanted, so it never takes
+     * the pointer from the panels or the instrument. Real surfaces get no collider at all (D24).
+     */
+    private fun buildFloorPad(root: Entity) {
+        val pad = Entity().named("floorPad")
+        root.addChild(pad)
+        pad.tapBox(Vec3(FLOOR_PAD_M, 0.01f, FLOOR_PAD_M))
+        pad.setLocal(position = Vec3(0f, PlaceRules.FLOOR_Y - 0.005f, 0f))
+        pad.enabled = false
+        floorPad = pad
+        floorPadOn = false
+    }
+
+    private fun setFloorPad(on: Boolean) {
+        if (on == floorPadOn) return
+        floorPadOn = on
+        floorPad?.enabled = on
     }
 
     /**
@@ -335,19 +337,17 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         standOffset = 0f to 0f
         mapper.pose = null
         mapper.armed = false
-        planes.stop()
         headTracker.stop()
         controller.stop()
         hands.stop()
         panelShown.clear()
         runCatching { rig?.release() }
         view?.destroy()
-        ghost?.destroy()
-        snapView?.destroy()
         markerView?.destroy()
         markerView = null
         marker = null
-        colliders?.clear()
+        runCatching { floorPad?.destroy(true) }
+        floorPad = null
         runCatching { stageRoot?.destroy(true) }
         runCatching { contentProbe?.destroy(true) }
         tagMaterials.clear()
@@ -357,11 +357,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         contentProbe = null
         content = null
         materials = null
-        colliders = null
         rig = null
         view = null
-        ghost = null
-        snapView = null
         hasHead = false
         ThLog.i("SCENE detached")
     }
@@ -373,7 +370,6 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     fun render(state: PlayUiState, force: Boolean = false) {
         val previous = ui
         ui = state
-        syncPlanes(state)
         syncAudio(state)
         mapper.settings = MapSettings(state.settings.scale, state.settings.octave, state.settings.curve, state.settings.handed, state.settings.quantize)
         if (!attached) return
@@ -385,7 +381,6 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             val m = materials
             val sh = shared
             if (root != null && m != null && sh != null) rebuildJob = scope.launch { buildInstrument(root, m, sh, layoutOf(ui)) }
-            ghost?.build(state.settings.handed)
         }
         if (!dragging) {
             state.pose?.let { if (force || it != previous.pose) v.place(it) }
@@ -401,16 +396,6 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             if (!state.background) hands.start()
         }
         if (!state.placed && previous.placed) hands.stop()
-        if (state.room == Room.PLACING && previous.room != Room.PLACING) resetGhost()
-        if (state.turnSerial != turnSeen) {
-            turnSeen = state.turnSerial
-            if (state.room == Room.PLACING) {
-                userTurned = true
-                turnFrom = ghostYaw
-                turnTo = ghostYaw - Math.toRadians(15.0).toFloat()
-                turnStartMs = SystemClock.elapsedRealtime()
-            }
-        }
         if (state.frontSerial != frontSeen) {
             frontSeen = state.frontSerial
             moveToMarker(force)
@@ -437,9 +422,9 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     }
 
     /**
-     * "移到标记处" / the 5 s no-desk timeout (v0.1.2, taste D1 / D20): the instrument goes to the user's marker. With no
-     * marker yet and nothing placed, it waits beside and beyond the place panel (never between the user and the panel,
-     * never from the head pose) and the hint asks for a marker. Placed and no marker: only the hint.
+     * "移到标记处" (v0.1.2, taste D1 / D20): the instrument goes to the user's marker. With no marker yet and nothing
+     * placed, it waits beside and a little beyond the place panel (never between the user and the panel, never from
+     * the head pose) and the hint says it can be dragged anywhere. Placed and no marker: only the hint.
      */
     private fun moveToMarker(force: Boolean) {
         val mk = marker
@@ -448,9 +433,9 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
                 marker = null
                 markerView?.setAt(null)
                 // v0.1.3: turned to where the user stands now, once, then locked (taste D1 / D10)
-                val pose = markerFor(mk.point, userAt())?.pose ?: mk.pose
-                ThLog.i("MARKER move to=${ThLog.pos(pose.center)} yaw=${ThLog.f(Math.toDegrees(pose.yaw.toDouble()).toFloat(), 1)} user=${userAt()?.let { ThLog.pos(it) }} stand=${mk.onStand}")
-                sink(PlayEvent.PlaceRequested(pose, mk.onStand))
+                val pose = PlaceRules.onFloor(mk.point, userAt() ?: mk.pose.center + Vec3(0f, 0f, 1f))
+                ThLog.i("MARKER move to=${ThLog.pos(pose.center)} yaw=${ThLog.f(Math.toDegrees(pose.yaw.toDouble()).toFloat(), 1)} user=${userAt()?.let { ThLog.pos(it) }}")
+                sink(PlayEvent.PlaceRequested(pose, onStand = true))
             }
             !ui.placed -> {
                 val panel = rig?.get(PanelSpec.PLACE)
@@ -458,7 +443,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
                     if (!force) main.postDelayed({ moveToMarker(false) }, 200)
                     return
                 }
-                val pose = DeskRules.besidePanel(panel.position, panel.rotation.rotate(Vec3(0f, 0f, 1f)), DeskRules.floorY(planes.all), userAt())
+                val pose = PlaceRules.besidePanel(panel.position, panel.rotation.rotate(Vec3(0f, 0f, 1f)), userAt())
                 ThLog.i("MARKER none -> waiting anchor ${ThLog.pos(pose.center)} beside panel ${ThLog.pos(panel.position)}")
                 sink(PlayEvent.PlaceRequested(pose, onStand = false, waiting = true))
             }
@@ -467,9 +452,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     }
 
     /**
-     * Where the user is, for choosing a desk edge and turning the instrument towards them, never the head pose: the
-     * controller (ray origin) when one is held, else the panel the user is reading (place panel before placing, the
-     * music stand afterwards), carried 0.6 m towards the user.
+     * Where the user is, for turning the instrument towards them, never for where it goes: the controller (ray
+     * origin) when one is held, else the panel the user is reading carried 0.6 m towards the user.
      */
     private fun userRef(): Vec3? {
         controller.sample()?.let { return it.ray.origin }
@@ -479,9 +463,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     }
 
     /**
-     * Where the user stands, for turning the instrument (and choosing the desk edge) only, never for where it goes
-     * (v0.1.3): the head position, level; else the controller; else [userRef]. Read once when placing, then the
-     * pose is locked. [userRef] sits beside the panel, so a marker nearer than the panel turned the front away.
+     * Where the user stands, for turning the instrument only, never for where it goes (v0.1.3): the head position,
+     * level; else the controller; else [userRef]. Read once when placing, then the pose is locked.
      */
     private fun userAt(): Vec3? {
         if (hasHead && head.position.length > 1e-3f) return head.position
@@ -490,84 +473,39 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
 
     /** Marker mode: before the instrument stands somewhere the user chose, and on the More page ("移到标记处"). */
     private fun markerMode(state: PlayUiState): Boolean =
-        (!state.placed && state.room != Room.PLACING) || state.awaitingMarker || state.markerReady || state.page == Page.MENU
+        !state.placed || state.awaitingMarker || state.markerReady || state.page == Page.MENU
 
-    /** A surface point -> where the instrument would stand: on a desk (snapped to its frame if near), or on the floor stand. */
-    private fun markerFor(point: Vec3, face: Vec3?): Marker? {
-        val handed = ui.settings.handed
-        desks.firstOrNull { abs(it.top - point.y) < 0.05f && DeskRules.inside(it, point) }?.let { d ->
-            val p = Vec3(point.x, d.top, point.z)
-            val ref = face ?: p
-            val f = DeskRules.frame(d, ref, handed)
-            val yaw = f?.yaw ?: DeskRules.yawTowards(p, ref)
-            val pose = if (f != null && DeskRules.snap(p, yaw, f, false)) InstrumentPose(f.center, f.yaw) else InstrumentPose(p, yaw)
-            return Marker(pose, false, p)
-        }
-        val fy = DeskRules.floorY(planes.all) ?: return null
-        if (abs(point.y - fy) > 0.08f) return null
-        val p = Vec3(point.x, fy, point.z)
-        return Marker(DeskRules.onFloor(p, fy, face ?: (p + Vec3(0f, 0f, 1f))), true, p)
-    }
-
-    private fun setMarker(mk: Marker, how: String) {
+    private fun setMarker(point: Vec3, how: String) {
+        val p = Vec3(point.x, PlaceRules.FLOOR_Y, point.z)
+        val mk = Marker(PlaceRules.onFloor(p, userAt() ?: (p + Vec3(0f, 0f, 1f))), p)
         marker = mk
         markerView?.setAt(mk.point)
-        ThLog.i("MARKER set by=$how at=${ThLog.pos(mk.point)} pose=${ThLog.pos(mk.pose.center)} stand=${mk.onStand}")
+        ThLog.i("MARKER set by=$how at=${ThLog.pos(mk.point)} pose=${ThLog.pos(mk.pose.center)}")
         sink(PlayEvent.MarkerSet)
     }
 
-    /** Marker mode, per frame: the controller ray's floor / desk point shows the aim ring; the trigger sets the marker. */
+    /**
+     * Marker mode, per frame: the controller ray's point on the Stage floor (analytic, never a real surface) shows the
+     * aim ring; the trigger sets the marker. The floor pad is on only in this mode (gaze + pinch).
+     */
     private fun markerFrame(state: PlayUiState) {
         val mv = markerView ?: return
-        if (!markerMode(state)) {
+        val mode = markerMode(state)
+        setFloorPad(mode)
+        if (!mode) {
             mv.aimAt(null)
             markerTriggerDown = false
             return
         }
         val s = controller.sample()
         val ray = s?.ray
-        var point: Vec3? = null
-        if (ray != null) {
-            point = DeskRules.hit(desks, ray.origin, ray.direction)?.second
-            val fy = DeskRules.floorY(planes.all)
-            if (point == null && fy != null && ray.direction.y < -1e-3f) {
-                val t = (fy - ray.origin.y) / ray.direction.y
-                if (t in 0.2f..6f) point = ray.origin + ray.direction * t
-            }
-        }
+        val point = ray?.let { PlaceRules.floorHit(it.origin, it.direction) }
         mv.aimAt(point)
         val down = s != null && (s.pressed || s.trigger > 0.6f)
-        if (down && !markerTriggerDown && point != null && ray != null && !rayHitsStand(ray)) {
-            markerFor(point, userAt())?.let { setMarker(it, "trigger") }
+        if (down && !markerTriggerDown && point != null && ray != null && !rayHitsStand(ray) && !(ui.pose?.let { rayHitsCabinet(it, ray) } ?: false)) {
+            setMarker(point, "trigger")
         }
         markerTriggerDown = down
-    }
-
-    private fun syncPlanes(state: PlayUiState) {
-        if (stageRoot == null) return
-        // plane detection runs while placing (and 10 s after), never in the background
-        val now = SystemClock.elapsedRealtime()
-        val want = !state.background && (!state.placed || state.dragging || (placedAtMs != NEVER && now - placedAtMs < PLANES_AFTER_MS))
-        if (want && !planes.running) {
-            val ok = planes.start(PlaneTracker.Listener { id, surface, _ -> if (surface != null) colliders?.upsert(surface) else colliders?.remove(id) })
-            if (!ok && !planesFailed) {
-                planesFailed = true
-                sink(PlayEvent.PlaneTrackingFailed)
-            }
-        } else if (!want && planes.running) {
-            planes.pause()
-        }
-    }
-
-    private var downSent = false
-
-    private fun resetGhost() {
-        downSent = false
-        ghostPose = null
-        userTurned = false
-        held = false
-        turnStartMs = NEVER
-        stickRate = 0f
     }
 
     private fun syncPanels(state: PlayUiState) {
@@ -587,31 +525,27 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         if (lastFrameMs != NEVER) frameGapMs = now - lastFrameMs
         lastFrameMs = now
         headTracker.pose()?.let {
-            head = it
-            hasHead = true
+            // the all-zero / identity pose before tracking is ready is not a head (D1 / D9, sign-hands lesson)
+            if (PlaceUpright.validHead(it.position, it.rotation)) {
+                head = it
+                if (!hasHead) headSinceMs = now
+                hasHead = true
+            }
         }
         val rig = rig ?: return
         rig.onFrame(now)
         rig.stowBehind(head.view)
         val state = ui
-        if (!state.placed && hasHead && head.position.length > 1e-3f) {
+        if (!state.placed && hasHead) {
             // D21 (v0.1.3): set once where it first appears, then fixed in the world; moved only by its handle or 叫回面前
-            follower.follow(head, planes.all, planes.count, now)
+            follower.follow(head, now)
             rig[PanelSpec.PLACE]?.place(follower.pose.position, follower.rotation, 1f)
         }
         if (!attached) return
         val hs = hands.pollSupport()
         val cs = controller.pollSupport()
-        syncPlanes(state)
-        refreshDesks(state)
         markerFrame(state)
-        when (state.room) {
-            Room.PLACING -> placingFrame(state, now, dt)
-            else -> {
-                ghost?.setShown(false)
-                snapView?.show(null, false, state.settings.handed)
-            }
-        }
+        layoutLog(state, now)
         if (state.placed) {
             placeStand(state, rig, dt)
             dragFrame(state, now, dt)
@@ -625,6 +559,24 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         }
     }
 
+    /** D1 "一打开就要看得见": 1 / 3 / 5 s after the head is first valid, log where the panel and the instrument are relative to it. */
+    private fun layoutLog(state: PlayUiState, now: Long) {
+        if (!hasHead || headSinceMs == NEVER || layoutLogged >= 3) return
+        val marks = longArrayOf(1000L, 3000L, 5000L)
+        if (now - headSinceMs < marks[layoutLogged]) return
+        layoutLogged++
+        val rig = rig ?: return
+        fun rel(p: Vec3): String {
+            val d = p - head.position
+            val flat = Vec3(d.x, 0f, d.z).length
+            val yawDeg = Math.toDegrees(PlaceRules.angle(kotlin.math.atan2(-d.x, -d.z), PlaceUpright.yawOf(head.forward, 0f)).toDouble())
+            val pitchDeg = Math.toDegrees(kotlin.math.atan2(d.y, flat).toDouble())
+            return String.format(Locale.US, "dist=%.2f yaw=%+.0f pitch=%+.0f", d.length, yawDeg, pitchDeg)
+        }
+        for (slot in rig.all) if (slot.shown) ThLog.i("LAYOUT t+${marks[layoutLogged - 1] / 1000}s panel=${slot.id} pos=${ThLog.pos(slot.position)} tilt=${ThLog.f(PlaceUpright.tiltDeg(slot.rotation), 2)} ${rel(slot.position)}")
+        state.pose?.let { ThLog.i("LAYOUT t+${marks[layoutLogged - 1] / 1000}s instrument pos=${ThLog.pos(it.center)} shown=${state.placed} ${rel(it.center)}") }
+    }
+
     private fun fallbackInputs(state: PlayUiState): RoleInputs {
         val (lh, rh) = hands.sample()
         val (lc, rc) = controller.hands()
@@ -632,128 +584,9 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         return RoleInputs(if (right) rh else lh, if (right) lh else rh, if (right) rc else lc, if (right) lc else rc)
     }
 
-    /** Desks from the planes (a seeded debug desk joins them; `desk=none` hides every desk). */
-    private fun refreshDesks(state: PlayUiState) {
-        val ref = userRef()
-        val cell = if (ref != null) "${(ref.x * 2).toInt()},${(ref.z * 2).toInt()}" else "-"
-        val key = "${planes.count}|${state.deskMode}|${seededDesk != null}|$cell"
-        if (key == desksKey) return
-        desksKey = key
-        if (state.deskMode == "seed" && seededDesk == null && ref != null) seedDesk()
-        val all = planes.all.toMutableList().also { l -> seededDesk?.let { l += it } }
-        desks =
-            if (state.deskMode == "none" || ref == null) emptyList()
-            // the panel sits ~0.25 m under the eyes: the no-floor desk rule (top 0.15 - 1.0 m under the head) shifts by that
-            else DeskRules.near(DeskRules.desks(all, ref.y + 0.25f), ref)
-        ThLog.i("DESKS n=${desks.size} planes=${planes.count} mode=${state.deskMode} ${desks.joinToString { "${it.kind}@${ThLog.f(it.top)}" }}")
-        val found = desks.isNotEmpty()
-        if (found != reportedDesks) {
-            reportedDesks = found
-            sink(PlayEvent.DesksChanged(found))
-        }
-    }
-
-    /** Debug `desk=seed`: a 1.2 x 0.7 m table top 0.35 m under the place panel, reaching from just behind it away from the user. */
-    private fun seedDesk() {
-        val panel = rig?.get(PanelSpec.PLACE)?.takeIf { it.shown } ?: return
-        val toUser = panel.rotation.rotate(Vec3(0f, 0f, 1f)).let { Vec3(it.x, 0f, it.z).normalized() }
-        val f = toUser * -1f
-        val r = Vec3(-f.z, 0f, f.x)
-        val y = panel.position.y - 0.35f
-        val c = Vec3(panel.position.x, y, panel.position.z) + f * 0.10f
-        val v = listOf(c - r * 0.6f - f * 0.35f, c + r * 0.6f - f * 0.35f, c + r * 0.6f + f * 0.35f, c - r * 0.6f + f * 0.35f)
-        val p = PlaneSurface("seed-desk", SurfaceKind.TABLE, "TABLE", v, listOf(0, 1, 2, 0, 2, 3))
-        seededDesk = p
-        colliders?.upsert(p)
-        ThLog.i("DESK seeded top=${ThLog.f(y)} center=${ThLog.pos(c)}")
-    }
-
-    private fun pointerRay(): PointerRay? = controller.sample()?.ray
-
-    /**
-     * The ghost (S04 / S05): follows the controller ray's desk point (aiming never uses the head's direction,
-     * taste D1; with gaze + pinch the tap itself places it). Without a pointer it waits on the snap frame. It
-     * faces the user until turned (stick dead zone 0.15, 90 degrees/s, smoothed 0.15 s; [turn 15]); it snaps to
-     * the desk-edge frame with hysteresis.
-     */
-    private fun placingFrame(state: PlayUiState, now: Long, dt: Float) {
-        val g = ghost ?: return
-        val desk = desks.firstOrNull()
-        val ref = userAt()
-        if (desk == null || ref == null) {
-            g.setShown(false)
-            snapView?.show(null, false, state.settings.handed)
-            return
-        }
-        frame = desks.mapNotNull { DeskRules.frame(it, ref, state.settings.handed) }.firstOrNull()
-        val f = frame
-        val ray = pointerRay()
-        val hit = ray?.let { DeskRules.hit(desks, it.origin, it.direction) }
-        val target =
-            when {
-                state.placeMode == "ghost" && f != null -> f.center + Vec3(-0.30f, 0f, 0f).let { f.let { fr -> InstrumentPose(fr.center, fr.yaw).dirToStage(Vec3(0.30f, 0f, 0.0f)) } }
-                hit != null -> hit.second
-                ghostPose != null -> ghostPose!!.center
-                f != null -> f.center
-                else -> desk.centroid
-            }
-        val c0 = ghostPose?.center
-        val center = if (c0 == null || dt <= 0f) target else c0.lerp(target, 1f - exp(-dt / FOLLOW_TAU_S))
-        // stick and turn 15
-        val x = controller.stickX()
-        val want = if (abs(x) > STICK_DEAD) -(x - STICK_DEAD * kotlin.math.sign(x)) / (1f - STICK_DEAD) * STICK_RATE_RAD_S else 0f
-        stickRate += (want - stickRate) * (if (dt > 0f) 1f - exp(-dt / STICK_TAU_S) else 0f)
-        if (abs(stickRate) > 0.01f) {
-            if (!userTurned) ThLog.i("STICK start")
-            userTurned = true
-            ghostYaw += stickRate * dt
-        } else if (want == 0f) stickRate = 0f
-        if (turnStartMs != NEVER) {
-            val q = ((now - turnStartMs) / TURN_MS).coerceIn(0f, 1f)
-            ghostYaw = turnFrom + (turnTo - turnFrom) * Ease.inOutCubic(q)
-            if (q >= 1f) turnStartMs = NEVER
-        }
-        if (!userTurned) ghostYaw = f?.yaw ?: DeskRules.yawTowards(center, ref)
-        val snapNow = state.placeMode == "snap" || DeskRules.snap(center, ghostYaw, f, held)
-        if (snapNow != held) ThLog.i("SNAP ${if (snapNow) "on" else "off"}")
-        held = snapNow
-        val wanted = if (snapNow && f != null) InstrumentPose(f.center, f.yaw) else InstrumentPose(Vec3(center.x, desk.top, center.z), ghostYaw)
-        val prev = ghostPose
-        ghostPose =
-            if (prev == null || dt <= 0f || state.freeze) wanted
-            else {
-                val k = 1f - exp(-dt / SNAP_TAU_S)
-                InstrumentPose(prev.center.lerp(wanted.center, k), prev.yaw + DeskRules.angle(wanted.yaw, prev.yaw) * k)
-            }
-        g.place(ghostPose!!)
-        g.setShown(true)
-        g.setBright(snapNow)
-        snapView?.show(f?.let { InstrumentPose(it.center, it.yaw) }, snapNow, state.settings.handed)
-        if (snapNow != reportedSnap) {
-            reportedSnap = snapNow
-            sink(PlayEvent.GhostChanged(snapNow))
-        }
-        // debug `place=down`: put the ghost down where it is
-        if (state.placeMode == "down" && !downSent) {
-            downSent = true
-            ThLog.i("PLACE debug down")
-            sink(PlayEvent.PlaceRequested(ghostPose!!, false))
-            return
-        }
-        // the trigger's press edge puts it down (controller ray on a desk)
-        val s = controller.sample()
-        val down = s != null && (s.pressed || s.trigger > 0.6f)
-        if (down && !triggerDown && hit != null) {
-            ThLog.i("TAP trigger place")
-            sink(PlayEvent.PlaceRequested(ghostPose!!, false))
-        }
-        triggerDown = down
-    }
-
-    /** The stand panel rides on the instrument: (-0.03, 0.42, -0.13), leaning back 12 degrees, facing the player. */
     /**
      * The music stand (v0.1.4): above the instrument and riding with it, turned about the vertical towards the user
-     * (smoothly; the user's position from [userAt], orientation only), moved by its handle, called back by 叫回.
+     * (smoothly; the user's position from [userAt], orientation only), upright (D9), moved by its handle, called back by 叫回.
      */
     private fun placeStand(state: PlayUiState, rig: PanelRig, dt: Float) {
         val pose = (if (dragging) dragPose else null) ?: state.pose ?: return
@@ -799,8 +632,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     /**
      * Moving the placed instrument at any time (v0.1.4): the controller trigger held 0.3 s with the ray on the cabinet,
      * or a pinch held 0.3 s with the palm on the cabinet ([GrabRules]: not where the hands play). It follows freely in
-     * the air (the controller keeps its grab distance along the ray; the pinching hand carries it), lands on a desk top
-     * when it comes within 6 cm of one, and the release sets the pose (and the anchor) there.
+     * the air (the controller keeps its grab distance along the ray; the pinching hand carries it) and the release
+     * sets the pose (and the anchor) exactly there: nothing snaps it to a surface (D1 "松手就停在原处", D24).
      */
     private fun dragFrame(state: PlayUiState, now: Long, dt: Float) {
         val s = controller.sample()
@@ -835,15 +668,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             }
             p = InstrumentPose(grabStartCenter + (palm - grabStartPalm), p.yaw)
         }
-        val landed = landOnDesk(p)
-        dragPose = landed
-        view?.place(landed)
-    }
-
-    /** A desk top within 6 cm under or over the instrument's feet takes it (it never has to). */
-    private fun landOnDesk(p: InstrumentPose): InstrumentPose {
-        val d = desks.firstOrNull { abs(it.top - p.center.y) < 0.06f && DeskRules.inside(it, p.center) } ?: return p
-        return InstrumentPose(Vec3(p.center.x, d.top, p.center.z), p.yaw)
+        dragPose = p
+        view?.place(p)
     }
 
     /** The palm of the [right] hand while it pinches, else null. */
@@ -876,7 +702,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     override fun debugMove(dx: Float, dy: Float, dz: Float): String {
         val pose = ui.pose ?: return "MOVE not placed"
         startDrag(pose, byController = false)
-        dragPose = landOnDesk(InstrumentPose(pose.center + Vec3(dx, dy, dz), pose.yaw))
+        dragPose = InstrumentPose(pose.center + Vec3(dx, dy, dz), pose.yaw)
         endDrag()
         return "MOVE to=${ThLog.pos(dragPose!!.center)}"
     }
@@ -885,7 +711,6 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         dragging = true
         dragByController = byController
         dragPose = pose
-        held = false
         mapper.suspended = true
         ThLog.i("DRAG start controller=$byController")
         sink(PlayEvent.DragChanged(true, null))
@@ -896,7 +721,6 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         dragging = false
         dragTriggerMs = NEVER
         mapper.suspended = false
-        ghost?.setShown(false)
         val final = dragPose ?: return
         ThLog.i("DRAG end at=${ThLog.pos(final.center)} yaw=${ThLog.f(Math.toDegrees(final.yaw.toDouble()).toFloat(), 1)}")
         sink(PlayEvent.DragChanged(false, final))
@@ -1071,33 +895,18 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         val stage = toStage(value.position.x, value.position.y, value.position.z)
         ThLog.i("TAP target=$name stage=${ThLog.pos(stage)}")
         if (stage == null) return
-        // marker mode: gaze + pinch on the floor or a desk sets the marker (taste D1)
-        if (ui.room != Room.PLACING) {
-            if (markerMode(ui)) markerFor(stage, userAt())?.let { setMarker(it, "tap") }
-            return
-        }
-        // placing on a desk: the ghost is the marker; a tap on the desk puts the instrument down there (snapped if near)
-        val hit = desks.firstOrNull { abs(it.top - stage.y) < 0.05f && DeskRules.inside(it, stage) } ?: return
-        val f = frame
-        val yaw = if (userTurned) ghostYaw else f?.yaw ?: DeskRules.yawTowards(stage, userAt() ?: stage)
-        val p = Vec3(stage.x, hit.top, stage.z)
-        val pose = if (f != null && DeskRules.snap(p, yaw, f, false)) InstrumentPose(f.center, f.yaw) else InstrumentPose(p, yaw)
-        sink(PlayEvent.PlaceRequested(pose, false))
+        // marker mode: gaze + pinch on the app's floor pad sets the marker (taste D1); nothing else is tappable here
+        if (markerMode(ui) && name == "floorPad") setMarker(stage, "tap")
     }
 
-    /** Debug `marker=desk|floor`: the marker as if aimed with a controller from the user's side (QA). */
+    /** Debug `marker=floor` (and the old `marker=desk`): the marker 1 m ahead of the user's side, 0.4 m to the right (QA). */
     override fun debugMarker(kind: String): String {
         val ref = userRef() ?: return "MARKER no reference yet"
         val slot = rig?.get(if (ui.placed) PanelSpec.STAND else PanelSpec.PLACE)
         val toUser = (slot?.rotation?.rotate(Vec3(0f, 0f, 1f)) ?: Vec3(0f, 0f, 1f)).let { Vec3(it.x, 0f, it.z).normalized() }
-        val point =
-            when (kind) {
-                "desk" -> desks.firstOrNull()?.let { d -> DeskRules.frame(d, ref, ui.settings.handed)?.center ?: d.centroid }
-                else -> DeskRules.floorY(planes.all)?.let { fy -> Vec3(ref.x, fy, ref.z) - toUser * 1.0f + Vec3(-toUser.z, 0f, toUser.x) * 0.4f }
-            } ?: return "MARKER no $kind surface"
-        val mk = markerFor(point, userAt()) ?: return "MARKER not on a surface ${ThLog.pos(point)}"
-        setMarker(mk, "debug")
-        return "MARKER debug $kind at=${ThLog.pos(mk.point)}"
+        val point = Vec3(ref.x, PlaceRules.FLOOR_Y, ref.z) - toUser * 1.0f + Vec3(-toUser.z, 0f, toUser.x) * 0.4f
+        setMarker(point, "debug")
+        return "MARKER debug $kind at=${ThLog.pos(point)}"
     }
 
     private fun toStage(x: Float, y: Float, z: Float): Vec3? {
@@ -1135,17 +944,21 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     override fun panelLines(): List<String> {
         val rig = rig ?: return emptyList()
         return rig.all.filter { it.shown && it.panel != null }.map { slot ->
-            String.format(Locale.US, "PANEL id=%s pos=%s %s scale=%.3f size_dp=%.0fx%.0f", slot.id, ThLog.pos5(slot.position), ThLog.quat5(slot.rotation), slot.scale, slot.widthDp, slot.heightDp)
+            String.format(Locale.US, "PANEL id=%s pos=%s %s tilt=%.2f scale=%.3f size_dp=%.0fx%.0f", slot.id, ThLog.pos5(slot.position), ThLog.quat5(slot.rotation), PlaceUpright.tiltDeg(slot.rotation), slot.scale, slot.widthDp, slot.heightDp)
         }
     }
 
-    override fun planesSummary(): List<String> =
-        planes.all.map { p -> "PLANE ${p.label} kind=${p.kind} center=${ThLog.pos(p.centroid)} normal=${ThLog.pos(p.normal)} top=${ThLog.f(p.maxY)}" } +
-            desks.map { d -> "DESK ${d.id.take(8)} ${d.kind} top=${ThLog.f(d.top)} n=${d.outline.size}" } +
-            listOfNotNull(frame?.let { "FRAME center=${ThLog.pos(it.center)} yaw=${ThLog.f(Math.toDegrees(it.yaw.toDouble()).toFloat(), 1)} edge=${ThLog.f(it.edgeLength)} depth=${ThLog.f(it.depth)}" })
+    /** D24 audit line: what of the real room the scene uses (nothing) and which colliders exist (the app's own). */
+    override fun realitySummary(): List<String> =
+        listOf(
+            "REALITY planes=off mesh=off occlusion=none restRule=off deskLanding=off",
+            "COLLIDERS floorPad(enabled=$floorPadOn, app floor y=${PlaceRules.FLOOR_Y}) instrumentTapBox=${view != null} realSurfaces=0",
+            "MARKER ${marker?.let { "set at=${ThLog.pos(it.point)}" } ?: "none"} mode=${markerMode(ui)}",
+        )
 
     override fun parkPanel(): String {
-        follower.park(head, planes.all, SystemClock.elapsedRealtime())
+        if (!hasHead) return "FOLLOW no valid head yet"
+        follower.park(head, SystemClock.elapsedRealtime())
         return "FOLLOW place park requested"
     }
 
@@ -1186,21 +999,18 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         private const val FAST_FRAME_MS = 40L
         private const val SLOW_STEP_MS = 600L
         private const val REBIND_DELAY_MS = 150L
-        private const val PLANES_AFTER_MS = 10_000L
-        private const val FOLLOW_TAU_S = 0.12f
-        private const val SNAP_TAU_S = 0.05f
         private const val STICK_DEAD = 0.15f
         private const val STICK_RATE_RAD_S = 1.5708f
-        private const val STICK_TAU_S = 0.15f
-        private const val TURN_MS = 150f
         private const val PINCH_GRAB = 0.8f
         private const val ANCHOR_SETTLE_MS = 400L
         /** The user sits about this far in front of the panel they read (reference point, not a head pose). */
         private const val PANEL_TO_USER_M = 0.6f
         private const val NEAR_M = 0.20f
         private const val WAVE_MS = 600f
+        /** The app's own floor tap pad, metres across (centred on the Stage origin). */
+        private const val FLOOR_PAD_M = 30f
 
-        /** 0.75 m from the eyes, 20 degrees down, 15 degrees left (design `panels.placePanel`). */
-        private val PLACE_OFFSET = Vec3(-0.1824f, -0.2565f, -0.6807f)
+        /** 15 degrees to the viewer's left (design `panels.placePanel`); distance and drop from [PlaceUpright] (D9). */
+        private const val PLACE_BEARING_DEG = -15f
     }
 }

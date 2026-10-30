@@ -11,8 +11,8 @@ import io.embodit.theremin.domain.play.LessonResult
 import io.embodit.theremin.domain.play.PlayFrame
 import io.embodit.theremin.domain.play.SongResult
 
-/** Before the instrument stands: loading (S01), finding a desk (S03), placing (S04 / S05), no plane access (S20). */
-enum class Room { LOADING, FINDING, PLACING, NO_PLANE, PLAYING }
+/** Before the instrument stands: loading (S01), appearing beside the panel (S03); then playing. v0.1.5: no desk placing, no plane access state (D24). */
+enum class Room { LOADING, FINDING, PLAYING }
 
 /** The music stand's one page at a time (design `panels.standPanel.pages`). */
 enum class Page { HOME, LESSONS, PRACTICE, RESULT, SETTINGS, MENU, ONBOARDING, SONG, SONG_RESULT }
@@ -66,8 +66,6 @@ data class PlayUiState(
     val awaitingMarker: Boolean = false,
     /** A marker is set and the instrument is not on it yet. */
     val markerReady: Boolean = false,
-    val deskFound: Boolean = false,
-    val snapped: Boolean = false,
     val dragging: Boolean = false,
     val settings: Settings = Settings(),
     val english: Boolean = false,
@@ -94,10 +92,9 @@ data class PlayUiState(
     /** Serial numbers the scene acts on once: move to the marker (or the waiting anchor), turn 15 degrees. */
     val frontSerial: Int = 0,
     val turnSerial: Int = 0,
-    /** Debug: desk / ghost requests for the scene. */
-    val deskMode: String = "real",
-    val placeMode: String? = null,
     val headNear: Boolean = false,
+    /** D26: "退出应用" pressed, the confirmation is showing. */
+    val exitConfirm: Boolean = false,
 ) {
     val placed: Boolean
         get() = room == Room.PLAYING && pose != null
@@ -112,8 +109,6 @@ data class PlayUiState(
             when (room) {
                 Room.LOADING -> "S01"
                 Room.FINDING -> "S03"
-                Room.PLACING -> if (snapped) "S05" else "S04"
-                Room.NO_PLANE -> "S20"
                 Room.PLAYING ->
                     when {
                         unavailable -> "S19"
@@ -143,12 +138,6 @@ data class PlayUiState(
 
 sealed interface PlayEvent {
     data object SceneReady : PlayEvent
-
-    data class DesksChanged(val found: Boolean) : PlayEvent
-
-    data object PlaneTrackingFailed : PlayEvent
-
-    data class GhostChanged(val snapped: Boolean) : PlayEvent
 
     /** The scene asks to put the instrument down at [pose]; [front] = on the virtual stand. */
     /** The scene puts the instrument at [pose]; [onStand] = on the virtual stand; [waiting] = the no-marker anchor. */
@@ -198,7 +187,12 @@ sealed interface PlayEvent {
 
     data object ReplayCoachClicked : PlayEvent
 
+    /** D26: "退出应用" -> confirmation -> [ExitConfirmed] ends the process; [ExitCancelled] keeps playing. */
     data object ExitClicked : PlayEvent
+
+    data object ExitConfirmed : PlayEvent
+
+    data object ExitCancelled : PlayEvent
 
     data object CoachNextClicked : PlayEvent
 

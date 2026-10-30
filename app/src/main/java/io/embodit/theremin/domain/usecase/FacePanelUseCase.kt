@@ -26,9 +26,9 @@ data class PanelFacing(val yaw: Float, val pitch: Float) {
 }
 
 /**
- * Facing rule for panels that stand in the room (strip, detector card, dialog): turn about the vertical
- * towards the head, then pitch towards the head, the pitch clamped to 60 degrees, never roll. When the
- * head is almost straight above or below the panel the yaw is undefined: the last yaw is kept.
+ * Facing rule for panels that stand in the room: turn about the vertical towards the head only (D9, v0.1.5:
+ * no pitch, no roll). When the head is almost straight above or below the panel the yaw is undefined: the
+ * last yaw is kept.
  */
 class FacePanelUseCase {
 
@@ -36,8 +36,8 @@ class FacePanelUseCase {
         val to = head - panel
         val flat = hypot(to.x, to.z)
         val yaw = if (flat < KEEP_YAW_WITHIN_M && lastYaw != null) lastYaw else if (flat < 1e-4f) 0f else atan2(to.x, to.z)
-        val pitch = atan2(to.y, flat).coerceIn(-MAX_PITCH_RAD, MAX_PITCH_RAD)
-        return PanelFacing(yaw, pitch)
+        // D9 (v0.1.5): panels stay upright; the pitch towards the head is no longer applied
+        return PanelFacing(yaw, 0f)
     }
 
     companion object {

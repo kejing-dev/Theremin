@@ -1,8 +1,6 @@
 package io.embodit.theremin.ui.play.scene
 
-import com.pico.spatial.core.ecs.AnchorComponent
 import com.pico.spatial.core.ecs.Entity
-import com.pico.spatial.core.ecs.anchor.AnchorTarget
 import com.pico.spatial.core.math.Quat
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.ui.foundation.content.SpatialViewAttachments
@@ -31,7 +29,7 @@ import kotlin.math.abs
  *    ([Slot.widthFactor]) and draws itself stretched by the inverse.
  *
  * 1 dp of an attachment panel is 0.8 mm at scale 1. A room panel is turned towards the viewer once per
- * frame ([faceViewer]) by writing yaw and pitch into its holder (no `LookAtComponent`: with it the
+ * frame ([faceViewer]) by writing its yaw into its holder (upright, D9) (no `LookAtComponent`: with it the
  * pointer hits the unturned plane). Panels that the app places itself (the lazy-follow main panel)
  * are [Slot.autoFace] = false and get their pose through [Slot.place].
  */
@@ -253,24 +251,6 @@ internal class PanelRig(private val stageRoot: Entity, private val onVisibility:
         }
     }
 
-    /** A panel locked to the head (`AnchorTarget.createCameraTarget()`): [offset] in the head frame. */
-    fun head(id: String, offset: Vec3, scale: Float, widthDp: Float, heightDp: Float): Slot {
-        val anchor = Entity().named("holder:$id")
-        val rotation = facingHead(offset)
-        anchor.components.set(AnchorComponent(AnchorTarget.createCameraTarget()).apply { positionOffset = offset.sdk() })
-        stageRoot.addChild(anchor)
-        val scaler = Entity()
-        anchor.addChild(scaler)
-        scaler.setLocal(rotation = rotation)
-        return Slot(id, scaler, Mount.HEAD, widthDp, heightDp).also {
-            it.headOffset = offset
-            it.headRotation = rotation
-            it.switch = anchor
-            it.home(Vec3.ZERO, scale, visible = false)
-            slots[id] = it
-        }
-    }
-
     /** Parents freshly composed panel entities under their holders. Returns true when none is missing. */
     fun bind(attachments: SpatialViewAttachments, ids: Collection<String>, nowMs: Long): Boolean {
         var complete = true
@@ -316,16 +296,6 @@ internal class PanelRig(private val stageRoot: Entity, private val onVisibility:
             var d = abs(a - b)
             if (d > PI.toFloat()) d = 2f * PI.toFloat() - d
             return d
-        }
-
-        /** Rotation in the head frame that turns a panel at [offset] so that its +Z points at the head. */
-        fun facingHead(offset: Vec3): Quat4 {
-            val z = (-offset).normalized()
-            var x = Vec3.UP.cross(z)
-            if (x.length < 1e-3f) x = Vec3.RIGHT
-            x = x.normalized()
-            val y = z.cross(x).normalized()
-            return Quat4.fromBasis(x, y, z)
         }
     }
 }

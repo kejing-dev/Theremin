@@ -3,9 +3,7 @@ package io.embodit.theremin.domain
 import io.embodit.theremin.domain.model.Handed
 import io.embodit.theremin.domain.model.Instrument
 import io.embodit.theremin.domain.model.InstrumentPose
-import io.embodit.theremin.domain.model.PlaneSurface
 import io.embodit.theremin.domain.model.Scale
-import io.embodit.theremin.domain.model.SurfaceKind
 import io.embodit.theremin.domain.model.Vec3
 import io.embodit.theremin.domain.play.ControllerHand
 import io.embodit.theremin.domain.play.HandSample
@@ -18,7 +16,7 @@ import io.embodit.theremin.domain.play.RoleInputs
 import io.embodit.theremin.domain.play.SongBook
 import io.embodit.theremin.domain.play.SongScorer
 import io.embodit.theremin.domain.play.Src
-import io.embodit.theremin.domain.usecase.DeskRules
+import io.embodit.theremin.domain.usecase.PlaceRules
 import java.io.File
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
@@ -216,45 +214,33 @@ class PlayTest {
     }
 
     @Test
-    fun deskFrameAndSnap() {
-        // 1.2 x 0.7 m desk at 0.74 m, the user south of it (+z)
-        val v = listOf(Vec3(-0.6f, 0.74f, -1.1f), Vec3(0.6f, 0.74f, -1.1f), Vec3(0.6f, 0.74f, -0.4f), Vec3(-0.6f, 0.74f, -0.4f))
-        val planes = listOf(
-            PlaneSurface("desk", SurfaceKind.TABLE, "TABLE", v, listOf(0, 1, 2, 0, 2, 3)),
-            PlaneSurface("floor", SurfaceKind.FLOOR, "FLOOR", v.map { Vec3(it.x * 4, 0f, it.z * 4) }, listOf(0, 1, 2, 0, 2, 3)),
-        )
-        val desks = DeskRules.desks(planes, 1.2f)
-        assertEquals(1, desks.size)
-        val head = Vec3(0f, 1.2f, 0.1f)
-        val f = DeskRules.frame(desks[0], head, Handed.RIGHT_PITCH)
-        assertNotNull(f)
-        assertEquals(-0.85f, f!!.center.z, 0.01f) // 0.45 in from the near edge
-        assertEquals(0f, f.yaw, 0.01f) // front (+z) to the user
-        assertTrue(DeskRules.snap(f.center + Vec3(0.1f, 0f, 0f), 0.3f, f, held = false))
-        assertFalse(DeskRules.snap(f.center + Vec3(0.15f, 0f, 0f), 0f, f, held = false))
-        assertTrue(DeskRules.snap(f.center + Vec3(0.15f, 0f, 0f), 0f, f, held = true))
-        val hit = DeskRules.hit(desks, head, (f.center - head).normalized())
-        assertNotNull(hit)
-        // shallow desk: 0.45 m deep -> inset 0.35, slid 0.20 m to the right
-        val shallow = v.map { if (it.z < -1f) Vec3(it.x, it.y, -0.85f) else it }
-        val sf = DeskRules.frame(DeskRules.desks(listOf(planes[1], PlaneSurface("s", SurfaceKind.TABLE, "TABLE", shallow, listOf(0, 1, 2, 0, 2, 3))), 1.2f)[0], head, Handed.RIGHT_PITCH)!!
-        assertEquals(-0.75f, sf.center.z, 0.01f)
-        assertEquals(0.20f, sf.center.x, 0.01f)
-    }
-
-    @Test
     fun waitingPoseIsBeyondAndBesideThePanel() {
         // panel at (0, 1.2, -0.7) facing the user at +z
         val panel = Vec3(0f, 1.2f, -0.7f)
-        val p = DeskRules.besidePanel(panel, Vec3(0f, 0f, 1f), 0f)
-        assertEquals(-0.7f - DeskRules.WAIT_BEYOND_M, p.center.z, 1e-4f) // beyond the panel, never between user and panel
-        assertEquals(DeskRules.WAIT_SIDE_M, p.center.x, 1e-4f) // to the panel's right
+        val p = PlaceRules.besidePanel(panel, Vec3(0f, 0f, 1f))
+        assertEquals(-0.7f - PlaceRules.WAIT_BEYOND_M, p.center.z, 1e-4f) // beyond the panel, never between user and panel
+        assertEquals(PlaceRules.WAIT_SIDE_M, p.center.x, 1e-4f) // to the panel's right
+        assertTrue("within reach, not where a desk monitor stands", -p.center.z < 1.2f)
+        assertEquals(1.2f - PlaceRules.WAIT_DROP_M, p.center.y, 1e-4f) // feet 0.35 m under the panel: hand height seated or standing
         val front = p.dirToStage(Vec3(0f, 0f, 1f))
         assertEquals(1f, front.z, 1e-4f) // turned back to the panel / user side
-        // a floor marker: on the stand at desk height, facing the controller
-        val f = DeskRules.onFloor(Vec3(1f, 0f, -1f), 0f, Vec3(1f, 1f, 0f))
-        assertEquals(DeskRules.STAND_TOP_M, f.center.y, 1e-4f)
+        // a floor marker: on the stand at desk height, facing the user
+        val f = PlaceRules.onFloor(Vec3(1f, 0f, -1f), Vec3(1f, 1f, 0f))
+        assertEquals(PlaceRules.STAND_TOP_M, f.center.y, 1e-4f)
         assertEquals(1f, f.dirToStage(Vec3(0f, 0f, 1f)).z, 1e-4f)
+    }
+
+    /** v0.1.5 (D24): the marker ray meets the app's own floor plane only, analytically; up / too far / too near give nothing. */
+    @Test
+    fun markerRayMeetsTheVirtualFloorOnly() {
+        val eye = Vec3(0f, 1.6f, 0f)
+        val hit = PlaceRules.floorHit(eye, Vec3(0f, -1.6f, -2f).normalized())
+        assertNotNull(hit)
+        assertEquals(0f, hit!!.y, 1e-4f)
+        assertEquals(-2f, hit.z, 1e-3f)
+        assertTrue(PlaceRules.floorHit(eye, Vec3(0f, 0.2f, -1f).normalized()) == null) // pointing up
+        assertTrue(PlaceRules.floorHit(eye, Vec3(0f, -0.1f, -1f).normalized()) == null) // 16 m away: too far
+        assertTrue(PlaceRules.floorHit(Vec3(0f, 0.1f, 0f), Vec3(0f, -1f, 0f)) == null) // 0.1 m: too near
     }
 
     /**
@@ -265,29 +251,23 @@ class PlayTest {
     fun placedInstrumentFacesTheUserFromEverySide() {
         val marker = Vec3(0.4f, 0f, -1.1f)
         val stances = mapOf("east" to Vec3(1.6f, 1.6f, -1.1f), "south" to Vec3(0.4f, 1.6f, 0.2f), "west" to Vec3(-0.9f, 1.6f, -1.1f), "north" to Vec3(0.4f, 1.6f, -2.4f))
-        // a 1.2 x 0.8 m table around the marker for the desk case
-        val v = listOf(Vec3(-0.2f, 0.75f, -1.5f), Vec3(1.0f, 0.75f, -1.5f), Vec3(1.0f, 0.75f, -0.7f), Vec3(-0.2f, 0.75f, -0.7f))
-        val desk = DeskRules.desks(listOf(PlaneSurface("t", SurfaceKind.TABLE, "TABLE", v, listOf(0, 1, 2, 0, 2, 3))), 1.6f)[0]
         for ((name, user) in stances) {
-            val floor = DeskRules.onFloor(marker, 0f, user)
-            val f = DeskRules.frame(desk, user, Handed.RIGHT_PITCH)!!
-            val wait = DeskRules.besidePanel(Vec3(0.2f, 1.3f, -0.6f), Vec3(0f, 0f, 1f), 0f, user)
-            for ((what, pose) in listOf("floor" to floor, "desk" to InstrumentPose(f.center, f.yaw), "waiting" to wait)) {
+            val floor = PlaceRules.onFloor(marker, user)
+            val wait = PlaceRules.besidePanel(Vec3(0.2f, 1.3f, -0.6f), Vec3(0f, 0f, 1f), user)
+            for ((what, pose) in listOf("floor" to floor, "waiting" to wait)) {
                 val toUser = user - pose.center
-                assertTrue("$name $what front ${DeskRules.facingErrorDeg(pose, user)}", DeskRules.facingErrorDeg(pose, user) < 10f)
+                assertTrue("$name $what front ${PlaceRules.facingErrorDeg(pose, user)}", PlaceRules.facingErrorDeg(pose, user) < 10f)
                 val stand = Instrument.standRotation(pose)
                 val n = stand.rotate(Vec3(0f, 0f, 1f))
-                assertTrue("$name $what stand normal", DeskRules.facingErrorDeg(n, toUser) < 10f)
+                assertTrue("$name $what stand normal", PlaceRules.facingErrorDeg(n, toUser) < 10f)
                 // readable, not mirrored: the stand's +X is the viewer's right, its +Y up
                 val view = Vec3(-toUser.x, 0f, -toUser.z).normalized()
                 val viewerRight = view.cross(Vec3.UP)
                 assertTrue("$name $what mirrored", stand.rotate(Vec3(1f, 0f, 0f)).dot(viewerRight) > 0.9f)
                 assertTrue("$name $what upside down", stand.rotate(Vec3(0f, 1f, 0f)).y > 0.9f)
+                // text scale never negative (D10)
+                assertTrue("$name $what scale", pose.rotation.rotate(Vec3(1f, 0f, 0f)).length > 0.99f)
             }
-            // the desk frame lines up with the edge nearest the user, so that edge faces them squarely
-            val nearestEdgeNormal = when (name) { "east" -> Vec3(1f, 0f, 0f); "south" -> Vec3(0f, 0f, 1f); "west" -> Vec3(-1f, 0f, 0f); else -> Vec3(0f, 0f, -1f) }
-            assertTrue("$name desk edge", DeskRules.facingErrorDeg(InstrumentPose(f.center, f.yaw).rotation.rotate(Vec3(0f, 0f, 1f)), nearestEdgeNormal) < 10f)
         }
     }
 }
-

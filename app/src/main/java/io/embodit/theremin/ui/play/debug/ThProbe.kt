@@ -59,7 +59,8 @@ object ThProbe {
 
         fun panelLines(): List<String>
 
-        fun planesSummary(): List<String>
+        /** D24 audit: what of the real room is used (nothing) and the app's own colliders. */
+        fun realitySummary(): List<String>
 
         fun parkPanel(): String
 
@@ -92,7 +93,7 @@ object ThProbe {
         /** Restarts the audio track with or without the SpatialAudioTrackExtension (latency check). */
         fun restartAudio(spatial: Boolean): String
 
-        /** Sets the marker on the seeded / first desk or on the floor beside the panel (`marker=desk|floor`). */
+        /** Sets the marker on the Stage floor beside the panel (`marker=floor`; `desk` is accepted and does the same). */
         fun debugMarker(kind: String): String
 
         /** Asymmetric "F↑" test texture on every 3D label. */

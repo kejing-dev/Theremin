@@ -131,13 +131,6 @@ class PlayViewModel(context: Context) : ViewModel() {
     fun onEvent(event: PlayEvent) {
         when (event) {
             PlayEvent.SceneReady -> if (_state.value.room == Room.LOADING) startFinding()
-            // v0.1.4: a desk is welcome but never needed: there is no desk-placing step; a desk takes a marker or a drag
-            is PlayEvent.DesksChanged -> set { it.copy(deskFound = event.found) }
-            PlayEvent.PlaneTrackingFailed -> if (!_state.value.placed) {
-                findJob?.cancel()
-                set { it.copy(room = Room.NO_PLANE) }
-            }
-            is PlayEvent.GhostChanged -> set { it.copy(snapped = event.snapped) }
             is PlayEvent.PlaceRequested -> place(event)
             PlayEvent.MarkerSet -> set { it.copy(markerReady = true, hint = Hint.MARKER_READY) }
             PlayEvent.NoMarker -> set { it.copy(hint = Hint.NO_MARKER) }
@@ -189,11 +182,17 @@ class PlayViewModel(context: Context) : ViewModel() {
             PlayEvent.MuteToggled -> changeSettings(_state.value.settings.copy(muted = !_state.value.settings.muted))
             PlayEvent.ReplaceClicked -> {
                 stopPractice()
-                set { it.copy(room = Room.FINDING, pose = null, onStand = false, page = Page.HOME, snapped = false) }
+                set { it.copy(room = Room.FINDING, pose = null, onStand = false, page = Page.HOME) }
                 startFinding()
             }
             PlayEvent.ReplayCoachClicked -> set { it.copy(page = Page.ONBOARDING, onboardStep = 0) }
-            PlayEvent.ExitClicked -> emit(PlayEffect.ExitApp)
+            // D26: exit asks once; the confirmed exit releases everything and ends the process (PlayScreen)
+            PlayEvent.ExitClicked -> set { it.copy(exitConfirm = true) }
+            PlayEvent.ExitCancelled -> set { it.copy(exitConfirm = false) }
+            PlayEvent.ExitConfirmed -> {
+                ThLog.i("EXIT confirmed")
+                emit(PlayEffect.ExitApp)
+            }
             PlayEvent.CoachNextClicked -> coachNext()
             PlayEvent.CoachSkipClicked -> finishCoach()
             PlayEvent.RetryClicked -> {
@@ -245,13 +244,11 @@ class PlayViewModel(context: Context) : ViewModel() {
         set {
             it.copy(
                 room = Room.PLAYING,
-                placeMode = null,
                 pose = e.pose,
                 onStand = e.onStand,
                 awaitingMarker = e.waiting,
                 markerReady = false,
                 hint = if (e.waiting) Hint.NO_MARKER else if (it.hint == Hint.NO_MARKER || it.hint == Hint.MARKER_READY) Hint.NONE else it.hint,
-                snapped = false,
                 page = if (it.room != Room.PLAYING) (if (first) Page.ONBOARDING else Page.HOME) else it.page,
                 onboardStep = if (first && it.room != Room.PLAYING) 0 else it.onboardStep,
             )
@@ -444,11 +441,13 @@ class PlayViewModel(context: Context) : ViewModel() {
         val s = st.settings
         when (key) {
             "state" -> debugState(value.uppercase(Locale.US))
-            "desk" -> set { it.copy(deskMode = value) }
-            "plane" -> if (value == "denied") onEvent(PlayEvent.PlaneTrackingFailed)
+            // v0.1.5 (D24): no desks, no planes, no ghost; these keys stay accepted so old QA scripts do not break
+            "desk", "plane" -> ThLog.i("CMD $key=$value ignored: real-surface detection was removed in v0.1.5 (taste D24)")
+            // `tomarker` (DebugCommands) arrives as front=1: the same event as the 移到标记处 buttons
+            "front", "tomarker" -> onEvent(PlayEvent.MoveToMarkerClicked)
             "place" -> when (value) {
                 "front", "marker" -> onEvent(PlayEvent.MoveToMarkerClicked)
-                else -> set { it.copy(placeMode = value) }
+                else -> ThLog.i("CMD place=$value ignored: desk placing was removed in v0.1.5 (taste D24)")
             }
             "lesson" -> startLesson(value.uppercase(Locale.US))
             "step" -> {
@@ -501,7 +500,12 @@ class PlayViewModel(context: Context) : ViewModel() {
             "menu" -> onEvent(PlayEvent.MoreClicked)
             "back" -> back()
             "replace" -> onEvent(PlayEvent.ReplaceClicked)
-            "exit" -> emit(PlayEffect.ExitApp)
+            // the same path as the user's: `exit` opens the confirmation, `exit=confirm` presses 退出, `exit=cancel` 取消
+            "exit" -> when (value) {
+                "confirm" -> onEvent(PlayEvent.ExitConfirmed)
+                "cancel" -> onEvent(PlayEvent.ExitCancelled)
+                else -> onEvent(PlayEvent.ExitClicked)
+            }
             else -> ThLog.i("CMD unknown $key=$value")
         }
         ThLog.i("CMD $key=$value -> ${_state.value.stateId()}")
@@ -510,6 +514,7 @@ class PlayViewModel(context: Context) : ViewModel() {
     private fun debugState(id: String) {
         when (id) {
             "S03" -> onEvent(PlayEvent.ReplaceClicked)
+            "S04", "S05", "S20" -> ThLog.i("CMD state $id no longer exists (v0.1.5, D24: no desk placing / plane access)")
             "S06" -> onEvent(PlayEvent.MoveToMarkerClicked)
             "S07" -> set { it.copy(page = Page.ONBOARDING, onboardStep = 0) }
             "S08", "S09" -> onEvent(PlayEvent.ToFreeClicked)
@@ -522,7 +527,6 @@ class PlayViewModel(context: Context) : ViewModel() {
             }
             "S16" -> onEvent(PlayEvent.SettingsClicked(false))
             "S17" -> onEvent(PlayEvent.MoreClicked)
-            "S20" -> onEvent(PlayEvent.PlaneTrackingFailed)
             "S21" -> startSong("G1", false)
             "S22" -> {
                 startSong("G1", false)
@@ -551,6 +555,7 @@ class PlayViewModel(context: Context) : ViewModel() {
             .put("lessonResult", st.lessonResult?.toString())
             .put("songResult", st.songResult?.toString())
             .put("hint", st.hint.name)
+            .put("exitConfirm", st.exitConfirm)
             .put("frame", "d=${ThLog.f(f.d, 4)} s=${ThLog.f(f.s, 3)} f=${ThLog.f(f.frequency.toFloat(), 2)} v=${ThLog.f(f.volume, 3)} src=${f.pitchSrc}/${f.volumeSrc}")
             .toString()
     }

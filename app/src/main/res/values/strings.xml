@@ -89,4 +89,8 @@
     <string name="hint_marker_ready">Marker set</string>
     <string name="action_recall">Bring here</string>
     <string name="action_recall_stand">Recall</string>
+    <string name="action_exit_app">Exit app</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="exit_confirm">Exit Air Theremin?</string>
+    <string name="about_version">Air Theremin v%1$s</string>
 </resources>

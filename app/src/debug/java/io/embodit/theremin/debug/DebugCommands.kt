@@ -25,12 +25,13 @@ import kotlin.math.sin
  * the loop; `hand=idle` = 0.25,off; `hand=off`), `joints=rightWrist:x,y,z;rightPalm:x,y,z;leftPalm:x,y,z` (full
  * mapping), `pinch=0|1`, `handpath=scale|glide|vibrato|song|song60|off` (72 Hz), `source=hands|controllers|none`.
  * Audio: `recordwav=<s>` (files/rec.wav), `pitchinfo`. Labels: `labeltest=1` (F-arrow test texture).
- * Everything else goes to the ViewModel: `state=Sxx`, `desk=seed|none|real`, `plane=denied`,
- * `place=ghost|snap|down|front` (front = 移到标记处), `marker=desk|floor` (set the marker), `tomarker` (移到标记处), `lesson=L1..L6`, `step=n`, `completetarget`, `done=1`, `song=G1..G6`, `beat=n`,
+ * Everything else goes to the ViewModel: `state=Sxx`, `place=front` (= 移到标记处; `desk=` / `plane=` / `place=ghost|snap|down` are
+ * accepted and ignored since v0.1.5, D24), `marker=floor` (set the marker on the Stage floor), `tomarker` (移到标记处), `lesson=L1..L6`, `step=n`, `completetarget`, `done=1`, `song=G1..G6`, `beat=n`,
  * `slow=0|1`, `score=n`, `seed=lessons`, `coach=1|2|3|reset`, `timbre=sine|classic|warm|bright`,
  * `octave=low|mid|high`, `scale=standard|wide`, `curve=soft|linear`, `quantize=off|light|strong`, `mirror=0|1`,
  * `mute=0|1`, `lang=zh|en|system`, `freeze=0|1`, `page=<Page>`, `library=basics|songs`, `settings`, `menu`,
- * `back`, `replace`, `exit`; queries `dump`, `hmd`, `bounds`, `planes`, `park`, `ui=<control>`.
+ * `back`, `replace`, `exit` / `exit=confirm` / `exit=cancel` (D26, the user's own path); queries `dump`, `hmd`, `bounds`, `reality`
+ * (= `planes`: D24 audit line), `park`, `ui=<control>`.
  * Every state change logs `STATE Sxx...` under the tag `Theremin`.
  */
 internal object DebugCommands {
@@ -40,7 +41,7 @@ internal object DebugCommands {
             "lang", "mirror", "scale", "octave", "curve", "quantize", "snap", "timbre", "mute", "coach_reset", "freeze_off", "freeze",
             "source", "desk", "plane", "state", "place", "seed", "library", "lesson", "song", "slow", "step", "beat", "completetarget", "done", "score",
             "coach", "page", "settings", "menu", "back", "replace", "marker", "tomarker", "hand", "joints", "pinch", "handpath", "labeltest", "ui",
-            "spatialaudio", "recordwav", "pitchinfo", "dump", "hmd", "bounds", "planes", "park", "paneldrag", "move", "standdrag", "standrecall", "exit",
+            "spatialaudio", "recordwav", "pitchinfo", "dump", "hmd", "bounds", "planes", "reality", "park", "paneldrag", "move", "standdrag", "standrecall", "exit",
         )
 
     private var pathThread: Thread? = null
@@ -141,7 +142,7 @@ internal object DebugCommands {
                     ThLog.i(String.format(Locale.US, "CTRL panel=%s name=%s cx=%.1f cy=%.1f w=%.1f h=%.1f", panel, ctrl, b.cx, b.cy, b.w, b.h))
                 }
             }
-            "planes" -> scene?.planesSummary()?.forEach { ThLog.i(it) } ?: ThLog.i(NO_SCENE)
+            "planes", "reality" -> scene?.realitySummary()?.forEach { ThLog.i(it) } ?: ThLog.i(NO_SCENE)
             "park" -> ThLog.i(scene?.parkPanel() ?: NO_SCENE)
             "paneldrag" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 2 }?.let { (x, y) -> ThLog.i(scene?.dragPanelDebug(x, y) ?: NO_SCENE) }
             "move" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 3 }?.let { (x, y, z) -> ThLog.i(scene?.debugMove(x, y, z) ?: NO_SCENE) }

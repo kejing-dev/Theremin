@@ -98,8 +98,15 @@ fun PlayScreen() {
         viewModel.effects.collect { effect: PlayEffect ->
             when (effect) {
                 PlayEffect.ExitApp -> {
-                    ThLog.i("STAGE close requested")
+                    // D26: release audio / tracking / anchor, remove the task from Recents, close the Stage, end the process
+                    ThLog.i("EXIT release + finishAndRemoveTask + exitProcess")
+                    runCatching { scene.detach() }.onFailure { ThLog.e("EXIT detach failed: $it", it) }
+                    runCatching {
+                        val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                        am.appTasks.forEach { runCatching { it.finishAndRemoveTask() } }
+                    }.onFailure { ThLog.e("EXIT finishAndRemoveTask failed: $it", it) }
                     runCatching { navigator.closeStage() }.onFailure { ThLog.e("STAGE close failed: $it", it) }
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ kotlin.system.exitProcess(0) }, 400)
                 }
                 is PlayEffect.ReferenceTone -> scene.audio()?.referenceTone(effect.midi)
                 PlayEffect.Cue -> scene.audio()?.cue()

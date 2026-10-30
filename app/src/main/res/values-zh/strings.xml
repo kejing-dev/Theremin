@@ -89,4 +89,8 @@
     <string name="hint_marker_ready">标记已放好</string>
     <string name="action_recall">叫回面前</string>
     <string name="action_recall_stand">叫回</string>
+    <string name="action_exit_app">退出应用</string>
+    <string name="action_cancel">取消</string>
+    <string name="exit_confirm">退出空中琴？</string>
+    <string name="about_version">空中琴 v%1$s</string>
 </resources>

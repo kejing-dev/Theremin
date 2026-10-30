@@ -5,7 +5,7 @@ import io.embodit.theremin.domain.model.Instrument
 import io.embodit.theremin.domain.model.InstrumentPose
 import io.embodit.theremin.domain.model.Scale
 import io.embodit.theremin.domain.model.Vec3
-import io.embodit.theremin.domain.usecase.DeskRules
+import io.embodit.theremin.domain.usecase.PlaceRules
 import io.embodit.theremin.domain.usecase.GrabRules
 import io.embodit.theremin.domain.usecase.StandPlacement
 import org.junit.Assert.assertFalse
@@ -40,7 +40,7 @@ class StandTest {
             val (at, yaw) = settle(pose, user, pose.yaw)
             val rot = StandPlacement.rotation(yaw)
             val n = rot.rotate(Vec3(0f, 0f, 1f))
-            val err = DeskRules.facingErrorDeg(n, user - at)
+            val err = PlaceRules.facingErrorDeg(n, user - at)
             assertTrue("$name normal off by $err", err < 10f)
             // upright, not mirrored: +X is the viewer's right, +Y up
             val view = Vec3(at.x - user.x, 0f, at.z - user.z).normalized()

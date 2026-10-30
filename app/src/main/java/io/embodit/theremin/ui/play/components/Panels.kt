@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,17 +70,17 @@ import kotlin.math.roundToInt
 // place panel (S01, S03 - S05, S20)
 // =============================================================================================
 
-/** The place panel, 400 x 220 dp, lazily following low left of the view until the instrument stands. */
+/** The place panel, 400 x 250 dp, set once in front of the viewer (upright, D9 / D21) until the instrument stands. */
 @Composable
 internal fun PlacePanel(state: PlayUiState, filled: Boolean, onEvent: (PlayEvent) -> Unit, onDrag: (Float, Float) -> Unit, onRecall: () -> Unit) {
     val (w, h) = PanelSpec.PLACE_SIZE
-    Glass(w.dp, h.dp, refreshKey = listOf(filled, state.room, state.snapped, state.deskFound, state.language())) {
+    Glass(w.dp, h.dp, refreshKey = listOf(filled, state.room, state.exitConfirm, state.language())) {
         if (!filled) return@Glass
         // D21: the panel stays where it is in the world; the handle moves it, 叫回面前 brings it back
         DragHandle(onDrag)
         TitleRow(
-            title = rs(if (state.room == Room.NO_PLANE) R.string.place_title_noplane else R.string.place_title),
-            trailing = { WordButton("place_recall", rs(R.string.action_recall), onRecall, minWidth = 112.dp, height = 40.dp) },
+            title = rs(R.string.place_title),
+            trailing = { WordButton("place_recall", rs(R.string.action_recall), onRecall, minWidth = 112.dp, height = 48.dp) },
         )
         when (state.room) {
             Room.LOADING -> {
@@ -87,30 +88,26 @@ internal fun PlacePanel(state: PlayUiState, filled: Boolean, onEvent: (PlayEvent
                 val sweep = loadingProgress()
                 LinearProgressIndicator(progress = { sweep }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = LinearProgressDefaults.linearProgressColors(indicatorColor = PicoTheme.colorScheme.interaction))
             }
-            Room.NO_PLANE -> {
-                Body(rs(R.string.place_noplane))
-                Spacer(Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    WordButton("place_front", rs(R.string.action_front), { onEvent(PlayEvent.MoveToMarkerClicked) }, primary = true, minWidth = 160.dp)
-                    WordButton("place_exit", rs(R.string.action_exit), { onEvent(PlayEvent.ExitClicked) }, minWidth = 120.dp)
-                }
-            }
             else -> {
-                val line =
-                    when {
-                        state.room == Room.FINDING -> rs(R.string.place_finding)
-                        state.snapped -> rs(R.string.place_snapped)
-                        else -> rs(R.string.place_placing)
-                    }
-                Body(line)
-                if (state.room == Room.PLACING) Body(rs(R.string.place_stick), secondary = true)
+                Body(rs(R.string.place_finding))
                 Spacer(Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (state.room == Room.PLACING) WordButton("turn15", rs(R.string.action_turn15), { onEvent(PlayEvent.TurnClicked) }, minWidth = 140.dp, iconRes = R.drawable.ic_rot_cw)
-                    WordButton("place_front", rs(R.string.action_front), { onEvent(PlayEvent.MoveToMarkerClicked) }, primary = state.room == Room.FINDING, minWidth = 160.dp)
+                if (state.exitConfirm) ExitConfirmRow(onEvent)
+                else Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    WordButton("place_front", rs(R.string.action_front), { onEvent(PlayEvent.MoveToMarkerClicked) }, primary = true, minWidth = 160.dp)
+                    WordButton("place_exit", rs(R.string.action_exit_app), { onEvent(PlayEvent.ExitClicked) }, minWidth = 120.dp)
                 }
             }
         }
+    }
+}
+
+/** D26: the second step of 退出应用: "退出空中琴？" [取消] [退出]. Shared by every page that offers the exit. */
+@Composable
+internal fun ExitConfirmRow(onEvent: (PlayEvent) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text = rs(R.string.exit_confirm), style = ThType.title, color = PicoTheme.colorScheme.labelPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        WordButton("exit_cancel", rs(R.string.action_cancel), { onEvent(PlayEvent.ExitCancelled) }, minWidth = 96.dp, height = 48.dp)
+        WordButton("exit_confirm", rs(R.string.action_exit), { onEvent(PlayEvent.ExitConfirmed) }, danger = true, minWidth = 96.dp, height = 48.dp)
     }
 }
 
@@ -122,17 +119,17 @@ internal fun PlacePanel(state: PlayUiState, filled: Boolean, onEvent: (PlayEvent
 @Composable
 internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, onEvent: (PlayEvent) -> Unit, onDrag: (Float, Float) -> Unit, onRecall: () -> Unit) {
     val (w, h) = PanelSpec.STAND_SIZE
-    Glass(w.dp, h.dp, padding = 14.dp, spacing = 6.dp, refreshKey = listOf(filled, state.page, state.room, state.unavailable, state.library, state.language(), state.settings.handed)) {
+    Glass(w.dp, h.dp, padding = 14.dp, spacing = 6.dp, refreshKey = listOf(filled, state.page, state.room, state.unavailable, state.library, state.language(), state.settings.handed, state.exitConfirm)) {
         if (!filled) return@Glass
         // v0.1.4: the stand rides above the instrument facing the user; the bar moves it, 叫回 puts it back (D21)
-        Row(modifier = Modifier.fillMaxWidth().height(28.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Spacer(Modifier.width(80.dp))
             DragHandle(onDrag, Modifier.weight(1f))
-            WordButton("stand_recall", rs(R.string.action_recall_stand), onRecall, minWidth = 80.dp, height = 28.dp)
+            WordButton("stand_recall", rs(R.string.action_recall_stand), onRecall, minWidth = 80.dp, height = 48.dp)
         }
         HintStrip(state, onEvent)
         when {
-            state.unavailable -> UnavailablePage(onEvent)
+            state.unavailable -> UnavailablePage(state, onEvent)
             else -> when (state.page) {
                 Page.HOME -> HomePage(state, onEvent)
                 Page.LESSONS -> LessonsPage(state, vm, onEvent)
@@ -205,13 +202,13 @@ private fun HintStrip(state: PlayUiState, onEvent: (PlayEvent) -> Unit) {
 
 @Composable
 private fun ModeRow(state: PlayUiState, onEvent: (PlayEvent) -> Unit, itemWidth: Dp = 150.dp, trailing: @Composable () -> Unit = {}) {
-    Row(modifier = Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Segments(
             items = listOf("mode_free" to rs(R.string.mode_free), "mode_practice" to rs(R.string.mode_practice)),
             selected = if (state.page == Page.HOME) 0 else 1,
             onSelect = { onEvent(PlayEvent.ModeSelected(it == 1)) },
             itemWidth = itemWidth,
-            height = 40.dp,
+            height = 48.dp,
         )
         Spacer(Modifier.weight(1f))
         trailing()
@@ -310,7 +307,7 @@ private fun ColumnScope.LessonsPage(state: PlayUiState, vm: PlayViewModel, onEve
             selected = if (state.library == Library.BASICS) 0 else 1,
             onSelect = { onEvent(PlayEvent.LibrarySelected(if (it == 0) Library.BASICS else Library.SONGS)) },
             itemWidth = 96.dp,
-            height = 40.dp,
+            height = 48.dp,
         )
     }
     data class Tile(val id: String, val name: String, val sub: String, val suggest: Boolean, val onClick: () -> Unit)
@@ -415,7 +412,8 @@ private fun ColumnScope.ResultPage(state: PlayUiState, onEvent: (PlayEvent) -> U
 
 @Composable
 private fun SettingRow(label: String, content: @Composable () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().height(38.dp), verticalAlignment = Alignment.CenterVertically) {
+    // B19 (v0.1.5): rows and controls 48 dp, never squeezed under the SegmentControl's own height (text went off-centre at 34 dp)
+    Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(text = label, style = ThType.body, color = PicoTheme.colorScheme.labelPrimary, maxLines = 1, modifier = Modifier.width(96.dp))
         Spacer(Modifier.weight(1f))
         content()
@@ -428,23 +426,36 @@ private fun ColumnScope.SettingsPage(state: PlayUiState, onEvent: (PlayEvent) ->
     fun set(n: io.embodit.theremin.ui.play.Settings) = onEvent(PlayEvent.SettingsChanged(n))
     BackTitle(rs(R.string.settings_title), onEvent)
     SettingRow(rs(R.string.set_timbre)) {
-        Segments(Timbre.entries.map { "timbre_${it.name.lowercase()}" to timbreName(it) }, s.timbre.ordinal, { set(s.copy(timbre = Timbre.entries[it])) }, itemWidth = 72.dp, height = 34.dp)
+        Segments(Timbre.entries.map { "timbre_${it.name.lowercase()}" to timbreName(it) }, s.timbre.ordinal, { set(s.copy(timbre = Timbre.entries[it])) }, itemWidth = 72.dp, height = 48.dp)
     }
     SettingRow(rs(R.string.set_octave)) {
-        Segments(listOf("octave_low" to rs(R.string.octave_low), "octave_mid" to rs(R.string.octave_mid), "octave_high" to rs(R.string.octave_high)), s.octave.ordinal, { set(s.copy(octave = Octave.entries[it])) }, itemWidth = 72.dp, height = 34.dp)
+        Segments(listOf("octave_low" to rs(R.string.octave_low), "octave_mid" to rs(R.string.octave_mid), "octave_high" to rs(R.string.octave_high)), s.octave.ordinal, { set(s.copy(octave = Octave.entries[it])) }, itemWidth = 72.dp, height = 48.dp)
     }
     SettingRow(rs(R.string.set_scale)) {
-        Segments(listOf("scale_standard" to rs(R.string.scale_standard), "scale_wide" to rs(R.string.scale_wide)), s.scale.ordinal, { set(s.copy(scale = Scale.entries[it])) }, itemWidth = 96.dp, height = 34.dp)
+        Segments(listOf("scale_standard" to rs(R.string.scale_standard), "scale_wide" to rs(R.string.scale_wide)), s.scale.ordinal, { set(s.copy(scale = Scale.entries[it])) }, itemWidth = 96.dp, height = 48.dp)
     }
     SettingRow(rs(R.string.set_snap)) {
-        Segments(listOf("snap_off" to rs(R.string.snap_off), "snap_light" to rs(R.string.snap_light), "snap_strong" to rs(R.string.snap_strong)), s.quantize.ordinal, { set(s.copy(quantize = Quantize.entries[it])) }, itemWidth = 72.dp, height = 34.dp)
+        Segments(listOf("snap_off" to rs(R.string.snap_off), "snap_light" to rs(R.string.snap_light), "snap_strong" to rs(R.string.snap_strong)), s.quantize.ordinal, { set(s.copy(quantize = Quantize.entries[it])) }, itemWidth = 72.dp, height = 48.dp)
     }
     SettingRow(rs(R.string.set_curve)) {
-        Segments(listOf("curve_soft" to rs(R.string.curve_soft), "curve_linear" to rs(R.string.curve_linear)), s.curve.ordinal, { set(s.copy(curve = Curve.entries[it])) }, itemWidth = 96.dp, height = 34.dp)
+        Segments(listOf("curve_soft" to rs(R.string.curve_soft), "curve_linear" to rs(R.string.curve_linear)), s.curve.ordinal, { set(s.copy(curve = Curve.entries[it])) }, itemWidth = 96.dp, height = 48.dp)
     }
     SettingRow(rs(R.string.set_hand)) {
-        Segments(listOf("hand_right" to rs(R.string.handed_right), "hand_left" to rs(R.string.handed_left)), s.handed.ordinal, { set(s.copy(handed = Handed.entries[it])) }, itemWidth = 120.dp, height = 34.dp)
+        Segments(listOf("hand_right" to rs(R.string.handed_right), "hand_left" to rs(R.string.handed_left)), s.handed.ordinal, { set(s.copy(handed = Handed.entries[it])) }, itemWidth = 120.dp, height = 48.dp)
     }
+    Spacer(Modifier.weight(1f))
+    // D26: the last item of every settings panel is 退出应用, with a second step
+    if (state.exitConfirm) ExitConfirmRow(onEvent)
+    else Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text = rs(R.string.about_version, versionName()), style = ThType.figure, color = PicoTheme.colorScheme.labelSecondary, maxLines = 1, modifier = Modifier.weight(1f))
+        WordButton("exit_app", rs(R.string.action_exit_app), { onEvent(PlayEvent.ExitClicked) }, minWidth = 120.dp, height = 48.dp, iconRes = R.drawable.ic_exit)
+    }
+}
+
+@Composable
+private fun versionName(): String {
+    val c = androidx.compose.ui.platform.LocalContext.current
+    return remember(c) { runCatching { c.packageManager.getPackageInfo(c.packageName, 0).versionName ?: "" }.getOrDefault("") }
 }
 
 @Composable
@@ -462,7 +473,6 @@ private fun ColumnScope.MenuPage(onEvent: (PlayEvent) -> Unit) {
     MenuRow("menu_front", R.drawable.ic_move, rs(R.string.menu_front)) { onEvent(PlayEvent.MoveToMarkerClicked) }
     MenuRow("menu_replace", R.drawable.ic_retry, rs(R.string.menu_replace)) { onEvent(PlayEvent.ReplaceClicked) }
     MenuRow("menu_coach", R.drawable.ic_hand, rs(R.string.menu_coach)) { onEvent(PlayEvent.ReplayCoachClicked) }
-    MenuRow("menu_exit", R.drawable.ic_exit, rs(R.string.action_exit)) { onEvent(PlayEvent.ExitClicked) }
 }
 
 @Composable
@@ -527,7 +537,7 @@ private fun ColumnScope.SongPage(state: PlayUiState, vm: PlayViewModel, onEvent:
     val ui = state.song ?: return
     val song = vm.songs.firstOrNull { it.id == ui.songId } ?: return
     BackTitle(if (state.english) song.en else song.zh, onEvent) {
-        Segments(listOf("speed_slow" to rs(R.string.speed_slow), "speed_full" to rs(R.string.speed_full)), if (ui.slow) 0 else 1, { onEvent(PlayEvent.SpeedSelected(it == 0)) }, itemWidth = 72.dp, height = 40.dp)
+        Segments(listOf("speed_slow" to rs(R.string.speed_slow), "speed_full" to rs(R.string.speed_full)), if (ui.slow) 0 else 1, { onEvent(PlayEvent.SpeedSelected(it == 0)) }, itemWidth = 72.dp, height = 48.dp)
     }
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         SongLane(state, vm, Modifier.width(300.dp).height(110.dp))
@@ -616,29 +626,38 @@ private fun ColumnScope.SongResultPage(state: PlayUiState, vm: PlayViewModel, on
 }
 
 @Composable
-private fun ColumnScope.UnavailablePage(onEvent: (PlayEvent) -> Unit) {
+private fun ColumnScope.UnavailablePage(state: PlayUiState, onEvent: (PlayEvent) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(painter = painterResource(R.drawable.ic_unavailable), contentDescription = null, modifier = Modifier.size(28.dp), tint = PicoTheme.colorScheme.labelPrimary)
         Text(text = rs(R.string.unavail_title), style = ThType.title, color = PicoTheme.colorScheme.labelPrimary, maxLines = 2)
     }
     Body(rs(R.string.unavail_reason), secondary = true)
     Spacer(Modifier.weight(1f))
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (state.exitConfirm) ExitConfirmRow(onEvent)
+    else Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         WordButton("retry", rs(R.string.action_retry), { onEvent(PlayEvent.RetryClicked) }, primary = true, minWidth = 140.dp)
-        WordButton("unavail_exit", rs(R.string.action_exit), { onEvent(PlayEvent.ExitClicked) }, minWidth = 112.dp)
+        WordButton("unavail_exit", rs(R.string.action_exit_app), { onEvent(PlayEvent.ExitClicked) }, minWidth = 112.dp)
     }
 }
 
-/** A SegmentControl of [itemWidth] x [height] items. */
+/**
+ * A SegmentControl [height] tall (SpatialUI's Regular size is 48 dp; Small 40, Rich 88) holding [itemWidth]-wide items.
+ * v0.1.5 (user: "settings 里文字有点不在按钮中心"): the control was 34 dp with items the same 34 dp inside a container
+ * that pads 4 dp all round, so the items overflowed and were clipped at the bottom and their text sat low. Now the
+ * items get the control's inner height and the control's width includes the padding and the 4 dp item gaps.
+ */
 @Composable
-internal fun Segments(items: List<Pair<String, String>>, selected: Int, onSelect: (Int) -> Unit, itemWidth: Dp, height: Dp) {
-    SegmentControl(modifier = Modifier.width(itemWidth * items.size).height(height), backgroundColor = PicoTheme.colorScheme.fillTertiary) {
+internal fun Segments(items: List<Pair<String, String>>, selected: Int, onSelect: (Int) -> Unit, itemWidth: Dp, height: Dp = 48.dp) {
+    val pad = SegmentControlDefaults.ContainerPadding
+    val gap = SegmentControlDefaults.ItemGap
+    val itemHeight = height - pad * 2
+    SegmentControl(modifier = Modifier.width(itemWidth * items.size + pad * 2 + gap * (items.size - 1)).height(height), backgroundColor = PicoTheme.colorScheme.fillTertiary) {
         items.forEachIndexed { i, (name, text) ->
             val onClick = { onSelect(i) }
             SegmentItem(
                 selected = selected == i,
                 onClick = onClick,
-                modifier = Modifier.width(itemWidth).height(height).probe(name, onClick),
+                modifier = Modifier.width(itemWidth).height(itemHeight).probe(name, onClick),
                 textStyle = PicoTheme.typography.labelLarge,
                 colors =
                     SegmentControlDefaults.colors(
