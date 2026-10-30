@@ -94,7 +94,8 @@ class ThereminAudio(
                     .getOrNull()
             } else null
         val t = runCatching { builder.build() }.onFailure { ThLog.e("AUDIO track failed: $it", it) }.getOrNull() ?: return
-        runCatching { t.setBufferSizeInFrames(burst * 2) }
+        // v0.1.4: three bursts to start (two underran into crackle on the headset), grown by one burst per underrun up to six
+        runCatching { t.setBufferSizeInFrames(burst * 3) }
         if (ext != null && antenna != null) {
             runCatching { ext.attachToEntityWithAudioTrack(antenna, t) }.onFailure { ThLog.w("AUDIO spatial attach failed: $it") }
         }
@@ -175,6 +176,7 @@ class ThereminAudio(
         var lastLatLogMs = 0L
         val ts = AudioTimestamp()
         var written = 0L
+        var lastUnderruns = 0
         while (!quit) {
             if (paused) {
                 SystemClock.sleep(10)
@@ -221,6 +223,13 @@ class ThereminAudio(
             }
             if (nowMs - lastLatLogMs > 1000) {
                 lastLatLogMs = nowMs
+                val under = runCatching { t.underrunCount }.getOrDefault(0)
+                if (under > lastUnderruns) {
+                    lastUnderruns = under
+                    val grown = (t.bufferSizeInFrames + burst).coerceAtMost(burst * 6)
+                    runCatching { t.setBufferSizeInFrames(grown) }
+                    ThLog.w("AUDIO underrun total=$under buffer=${t.bufferSizeInFrames}")
+                }
                 if (runCatching { t.getTimestamp(ts) }.getOrDefault(false)) {
                     lastBufferMs = ((written - ts.framePosition) * 1000f / sampleRate)
                 }

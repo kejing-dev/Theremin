@@ -14,11 +14,13 @@ import kotlin.math.sqrt
  * run the very code the AudioTrack thread runs.
  *
  * One phase accumulator (double); harmonics are sin(k * phase) of that same phase, so a pitch change never
- * breaks the phase. Every control value is interpolated per sample: pitch is smoothed in the semitone
- * (log) domain with tau 6 ms, volume with tau 12 ms up / 30 ms down and a slope limit of 25 ms from silence
- * to full / 60 ms back. The auto vibrato only touches the sound: it fades in 400 ms after the hand has held
- * still for 300 ms and leaves at once when it moves. A 20 Hz DC blocker and a soft limit at -1 dBFS close
- * the chain. Full volume at the default 70 % master peaks at -9 dBFS for the pure tone; the other timbres
+ * breaks the phase. Every control value is interpolated per sample. v0.1.4 (user: "像电波干扰"): pitch glides
+ * through two one-pole stages in the semitone (log) domain, 14 ms each (about a 30 ms portamento, and the
+ * 30 - 90 Hz steps of hand tracking come out -12 dB/octave smoother than with v0.1.3's single 6 ms stage);
+ * volume through two stages, 18 ms up / 35 ms down each, plus the slope limit of 25 ms from silence to full /
+ * 60 ms back. A light 5 Hz vibrato of a few cents is always there and deepens after the hand has held still for
+ * 300 ms. The voice goes through a gentle low-pass and a small mono room (Schroeder: four combs, two all-passes,
+ * 12 % wet). A 20 Hz DC blocker and a soft limit at -1 dBFS close the chain. Full volume at the default 70 % master peaks at -9 dBFS for the pure tone; the other timbres
  * are RMS-matched to it.
  *
  * Not thread safe: one instance per audio thread.
@@ -32,15 +34,18 @@ class SynthCore(val sampleRate: Int = 48_000) {
 
     private val voices =
         mapOf(
-            Timbre.SINE to Voice(listOf(1 to 1.0), 0.0, 0.0, 0.0),
-            Timbre.CLASSIC to Voice(listOf(1 to 1.0, 2 to db(-16.0), 3 to db(-24.0)), 0.0, 5.5, 6.0),
-            Timbre.WARM to Voice(listOf(1 to 1.0, 2 to db(-10.0)), 1200.0, 5.0, 5.0),
-            Timbre.BRIGHT to Voice(listOf(1 to 1.0, 2 to db(-12.0), 3 to db(-16.0), 5 to db(-26.0)), 0.0, 6.0, 7.0),
+            Timbre.SINE to Voice(listOf(1 to 1.0), 0.0, 5.0, 4.0),
+            Timbre.CLASSIC to Voice(listOf(1 to 1.0, 2 to db(-18.0), 3 to db(-26.0), 4 to db(-38.0)), 3200.0, 5.0, 7.0),
+            Timbre.WARM to Voice(listOf(1 to 1.0, 2 to db(-12.0)), 1200.0, 4.8, 6.0),
+            Timbre.BRIGHT to Voice(listOf(1 to 1.0, 2 to db(-12.0), 3 to db(-17.0), 5 to db(-28.0)), 5000.0, 5.5, 7.0),
         )
 
     private val fs = sampleRate.toDouble()
     private val aUp = 1 - exp(-1 / (TAU_UP_S * fs))
     private val aDown = 1 - exp(-1 / (TAU_DOWN_S * fs))
+    private val aUp2 = 1 - exp(-1 / (TAU_UP2_S * fs))
+    private val aDown2 = 1 - exp(-1 / (TAU_DOWN2_S * fs))
+    private val room = Room(sampleRate)
     private val attackStep = 1 / (MIN_ATTACK_S * fs)
     private val releaseStep = 1 / (MIN_RELEASE_S * fs)
     private val dcR = 1 - 2 * PI * 20 / fs
@@ -58,7 +63,15 @@ class SynthCore(val sampleRate: Int = 48_000) {
     /** The auto vibrato (off only for analysis renders). */
     var vibratoEnabled: Boolean = true
 
+    /** Glide stages for pitch and volume (2; 1 renders the v0.1.3 single stage for the before / after check). */
+    var glidePoles: Int = 2
+
+    /** Room send 0..1 (0 for analysis renders). */
+    var roomWet: Double = ROOM_WET
+
     private var midiS = Double.NaN
+    private var midiA = Double.NaN
+    private var volA = 0.0
     private var vol = 0.0
     private var gain = 0.0
     private var phase = 0.0
@@ -93,18 +106,31 @@ class SynthCore(val sampleRate: Int = 48_000) {
      */
     fun render(out: FloatArray, offset: Int, n: Int, targetMidi: Double, targetVolume: Double) {
         val v = voices.getValue(timbre)
-        val aPitch = 1 - exp(-1 / (pitchTauS * fs))
-        if (midiS.isNaN()) midiS = targetMidi
+        val two = glidePoles >= 2
+        val aPitch = 1 - exp(-1 / ((if (two) pitchTauS / 2 else pitchTauS) * fs))
+        val aU = if (two) aUp2 else aUp
+        val aD = if (two) aDown2 else aDown
+        if (midiS.isNaN()) {
+            midiS = targetMidi
+            midiA = targetMidi
+        }
         // stillness for the vibrato: |change| below 0.15 semitone per 300 ms
         val blockS = n / fs
         if (!lastTarget.isNaN() && abs(targetMidi - lastTarget) < STILL_SEMITONES * blockS / STILL_WINDOW_S) stableS += blockS else stableS = 0.0
         lastTarget = targetMidi
-        val vibTarget = if (vibratoEnabled && v.vibCents > 0 && stableS > STILL_WINDOW_S) 1.0 else 0.0
+        val vibTarget = if (!vibratoEnabled || v.vibCents <= 0) 0.0 else if (stableS > STILL_WINDOW_S) 1.0 else VIB_MOVING
         val lpA = if (v.lowPassHz > 0) 1 - exp(-2 * PI * v.lowPassHz / fs) else 0.0
         val wantGain = master.coerceIn(0.0, 1.0)
         for (i in 0 until n) {
-            midiS += aPitch * (targetMidi - midiS)
-            var dv = (if (targetVolume > vol) aUp else aDown) * (targetVolume - vol)
+            if (two) {
+                midiA += aPitch * (targetMidi - midiA)
+                midiS += aPitch * (midiA - midiS)
+                volA += (if (targetVolume > volA) aU else aD) * (targetVolume - volA)
+            } else {
+                midiS += aPitch * (targetMidi - midiS)
+                volA = targetVolume
+            }
+            var dv = (if (volA > vol) aU else aD) * (volA - vol)
             dv = dv.coerceIn(-releaseStep, attackStep)
             vol += dv
             var dg = (if (wantGain > gain) aUp else aDown) * (wantGain - gain)
@@ -124,6 +150,7 @@ class SynthCore(val sampleRate: Int = 48_000) {
                 x = lp
             }
             var y = x * vol * gain * FULL_SCALE
+            if (roomWet > 0) y = y * (1 - roomWet) + room.process(y) * roomWet
             if (cueLeft > 0) {
                 val t = 1.0 - cueLeft / (CUE_S * fs)
                 val env = sin(PI * t)
@@ -148,8 +175,13 @@ class SynthCore(val sampleRate: Int = 48_000) {
     }
 
     companion object {
-        const val TAU_PITCH_S = 0.006
-        const val TAU_PITCH_STRONG_S = 0.013
+        /** Total pitch glide (two stages of half each): about a 30 ms portamento. */
+        const val TAU_PITCH_S = 0.028
+        const val TAU_PITCH_STRONG_S = 0.040
+        const val TAU_UP2_S = 0.018
+        const val TAU_DOWN2_S = 0.035
+        const val VIB_MOVING = 0.45
+        const val ROOM_WET = 0.12
         const val TAU_UP_S = 0.012
         const val TAU_DOWN_S = 0.030
         const val MIN_ATTACK_S = 0.025
@@ -170,3 +202,41 @@ class SynthCore(val sampleRate: Int = 48_000) {
         fun db(v: Double): Double = 10.0.pow(v / 20.0)
     }
 }
+
+/** A small mono Schroeder room: four parallel damped combs into two all-passes (about 0.6 s decay). */
+private class Room(sampleRate: Int) {
+    private val k = sampleRate / 44_100.0
+    private val combs = intArrayOf(1116, 1188, 1277, 1356).map { DoubleArray((it * k).toInt()) }
+    private val combPos = IntArray(4)
+    private val combLp = DoubleArray(4)
+    private val aps = intArrayOf(556, 341).map { DoubleArray((it * k).toInt()) }
+    private val apPos = IntArray(2)
+
+    fun process(x: Double): Double {
+        var sum = 0.0
+        for (i in 0..3) {
+            val b = combs[i]
+            val y = b[combPos[i]]
+            combLp[i] = y * (1 - DAMP) + combLp[i] * DAMP
+            b[combPos[i]] = x + combLp[i] * FEEDBACK
+            combPos[i] = (combPos[i] + 1) % b.size
+            sum += y
+        }
+        var y = sum * 0.25
+        for (i in 0..1) {
+            val b = aps[i]
+            val d = b[apPos[i]]
+            val o = -y + d
+            b[apPos[i]] = y + d * 0.5
+            apPos[i] = (apPos[i] + 1) % b.size
+            y = o
+        }
+        return y
+    }
+
+    private companion object {
+        const val FEEDBACK = 0.72
+        const val DAMP = 0.35
+    }
+}
+

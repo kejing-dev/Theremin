@@ -116,6 +116,14 @@ class PlayMapper {
 
     private val pitchFilter = OneEuro()
     private val volumeFilter = OneEuro()
+
+    /** Repeated hand points skip the filters (v0.1.4); false only to render the v0.1.3 sound for comparison. */
+    var filterSkipsRepeats: Boolean
+        get() = pitchFilter.skipRepeats
+        set(v) {
+            pitchFilter.skipRepeats = v
+            volumeFilter.skipRepeats = v
+        }
     private var pitchSeenNs = NEVER
     private var volumeSeenNs = NEVER
     private var pitchEverSeen = false
