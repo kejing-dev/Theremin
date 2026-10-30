@@ -5,11 +5,11 @@ object PanelSpec {
     /** Place panel before the instrument stands, fixed in the world where it appeared (D21): 400 x 250 (handle + recall, v0.1.3). */
     const val PLACE = "placePanel"
 
-    /** Music stand panel on the instrument, behind the antenna: 450 x 380 (design 320; six settings rows plus the hint did not fit, QA q1-2). */
+    /** Music stand panel above the instrument, facing the user (v0.1.4): 450 x 410 (380 + the grab bar row; design 320, QA q1-2). */
     const val STAND = "standPanel"
 
     val PLACE_SIZE = 400f to 250f
-    val STAND_SIZE = 450f to 380f
+    val STAND_SIZE = 450f to 410f
 
     val pool: List<String> = listOf(PLACE, STAND)
 

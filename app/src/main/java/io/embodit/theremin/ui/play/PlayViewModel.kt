@@ -131,14 +131,8 @@ class PlayViewModel(context: Context) : ViewModel() {
     fun onEvent(event: PlayEvent) {
         when (event) {
             PlayEvent.SceneReady -> if (_state.value.room == Room.LOADING) startFinding()
-            is PlayEvent.DesksChanged -> {
-                set { it.copy(deskFound = event.found) }
-                val st = _state.value
-                if (event.found && st.room == Room.FINDING) {
-                    findJob?.cancel()
-                    set { it.copy(room = Room.PLACING) }
-                }
-            }
+            // v0.1.4: a desk is welcome but never needed: there is no desk-placing step; a desk takes a marker or a drag
+            is PlayEvent.DesksChanged -> set { it.copy(deskFound = event.found) }
             PlayEvent.PlaneTrackingFailed -> if (!_state.value.placed) {
                 findJob?.cancel()
                 set { it.copy(room = Room.NO_PLANE) }
@@ -207,7 +201,12 @@ class PlayViewModel(context: Context) : ViewModel() {
                 set { it.copy(unavailable = false) }
             }
             is PlayEvent.SpeedSelected -> _state.value.song?.let { startSong(it.songId, event.slow) }
-            is PlayEvent.DragChanged -> set { it.copy(dragging = event.dragging, pose = event.pose ?: it.pose) }
+            is PlayEvent.DragChanged ->
+                set {
+                    if (event.pose == null) it.copy(dragging = event.dragging)
+                    // released where the user let go: in the air (no virtual stand), the marker wait is over
+                    else it.copy(dragging = event.dragging, pose = event.pose, onStand = false, awaitingMarker = false, hint = if (it.hint == Hint.NO_MARKER) Hint.NONE else it.hint)
+                }
             is PlayEvent.HeadNear -> set { it.copy(headNear = event.near) }
             PlayEvent.WentBackground -> set { it.copy(background = true) }
             PlayEvent.CameForeground -> set { it.copy(background = false) }
@@ -229,17 +228,15 @@ class PlayViewModel(context: Context) : ViewModel() {
         }
     }
 
+    /**
+     * v0.1.4 (user: "不用落在桌子上"): no waiting for a desk. The instrument appears at once in the air beside the place
+     * panel (the waiting anchor), facing the user; they drag it anywhere, or set a floor / desk marker and move it there.
+     */
     private fun startFinding() {
-        set { it.copy(room = if (it.deskFound) Room.PLACING else Room.FINDING) }
+        set { it.copy(room = Room.FINDING) }
         findJob?.cancel()
-        findJob =
-            viewModelScope.launch {
-                delay(FIND_TIMEOUT_MS)
-                if (_state.value.room == Room.FINDING) {
-                    ThLog.i("FIND timeout -> waiting anchor beside the panel")
-                    set { it.copy(frontSerial = it.frontSerial + 1) }
-                }
-            }
+        ThLog.i("FIND -> waiting anchor beside the panel (in the air)")
+        set { it.copy(frontSerial = it.frontSerial + 1) }
     }
 
     private fun place(e: PlayEvent.PlaceRequested) {
@@ -560,7 +557,6 @@ class PlayViewModel(context: Context) : ViewModel() {
 
     companion object {
         private const val NEVER = Long.MIN_VALUE
-        const val FIND_TIMEOUT_MS = 5000L
         const val HINT_MS = 4000L
         const val READOUT_MS = 100L
         const val UNAVAILABLE_MS = 3000L

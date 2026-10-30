@@ -130,7 +130,8 @@ class PlayTest {
         val ctrlPoint = pose.toStage(Instrument.ripplePoint(0.29f, -20f, Handed.RIGHT_PITCH, 0.25f))
         val ctrl = RoleInputs(pitchController = ControllerHand(ctrlPoint, 0f), volumeHand = volumeHand(0.12f))
         var maxJump = 0f
-        for (k in 11..40) {
+        // a held-still controller repeats one point: the filter carries on at its last cut-off (v0.1.4), ~0.5 s to settle
+        for (k in 11..140) {
             val f = m.step(k * 4 * ms, ctrl)
             maxJump = maxOf(maxJump, abs(f.s - last))
             last = f.s

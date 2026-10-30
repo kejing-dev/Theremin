@@ -39,7 +39,7 @@ internal fun PlayStage(state: PlayUiState, vm: PlayViewModel, scene: PlayScene, 
                 PoolPanel(PanelSpec.PLACE, scene) { inView -> PlacePanel(state = state, filled = inView, onEvent = onEvent, onDrag = scene::dragPanel, onRecall = scene::recallPanel) }
             }
             AttachmentPanel(PanelSpec.STAND) {
-                PoolPanel(PanelSpec.STAND, scene) { inView -> StandPanel(state = state, vm = vm, filled = inView, onEvent = onEvent) }
+                PoolPanel(PanelSpec.STAND, scene) { inView -> StandPanel(state = state, vm = vm, filled = inView, onEvent = onEvent, onDrag = scene::dragStand, onRecall = scene::recallStand) }
             }
         },
         update = { _, attachments ->

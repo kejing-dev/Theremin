@@ -48,13 +48,13 @@
     <string name="octave_high">高</string>
     <string name="octave_low">低</string>
     <string name="octave_mid">中</string>
-    <string name="place_finding">正在找桌面… 看一眼你的书桌</string>
+    <string name="place_finding">琴马上出现在面板旁</string>
     <string name="place_loading">正在调音…</string>
     <string name="place_noplane">拿不到桌面信息</string>
     <string name="place_placing">看向桌面，捏一下放下</string>
     <string name="place_snapped">已对齐桌边 · 捏一下放下</string>
     <string name="place_stick">摇杆左右转动</string>
-    <string name="place_title">把琴放到桌上</string>
+    <string name="place_title">摆放空中琴</string>
     <string name="place_title_noplane">空中琴</string>
     <string name="practice_done_short">完成！</string>
     <string name="practice_hold">按住 %1$s %2$d 秒</string>
@@ -85,7 +85,8 @@
     <string name="timbre_warm">温暖</string>
     <string name="unavail_reason">可能没开手部追踪权限，或不在全空间。可到系统设置里开启。</string>
     <string name="unavail_title">这台设备现在拿不到手和手柄的位置</string>
-    <string name="hint_no_marker">指向地面或桌面，捏一下放标记</string>
+    <string name="hint_no_marker">捏住琴身底座，拖到想放的地方</string>
     <string name="hint_marker_ready">标记已放好</string>
     <string name="action_recall">叫回面前</string>
+    <string name="action_recall_stand">叫回</string>
 </resources>

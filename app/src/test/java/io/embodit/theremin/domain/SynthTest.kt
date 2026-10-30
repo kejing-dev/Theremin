@@ -29,6 +29,7 @@ class SynthTest {
         val core = SynthCore(fs)
         core.timbre = timbre
         core.vibratoEnabled = vibrato
+        core.roomWet = 0.0 // analysis: the dry voice (the room is checked by ear in performance_v014.wav)
         val n = (seconds * fs).toInt()
         val out = FloatArray(n)
         var i = 0
@@ -94,9 +95,10 @@ class SynthTest {
     fun timbreHarmonicsMatchTheSpec() {
         val expect = mapOf(
             Timbre.SINE to listOf(-200.0, -200.0, -200.0),
-            Timbre.CLASSIC to listOf(-16.0, -24.0, -200.0),
-            Timbre.WARM to listOf(-10.5, -200.0, -200.0),
-            Timbre.BRIGHT to listOf(-12.0, -16.0, -26.0),
+            // v0.1.4: softer partials under a 3.2 kHz low-pass (the one-pole takes about 0.5 dB off h2)
+            Timbre.CLASSIC to listOf(-18.5, -27.0, -200.0),
+            Timbre.WARM to listOf(-12.5, -200.0, -200.0),
+            Timbre.BRIGHT to listOf(-12.2, -17.5, -29.0),
         )
         val f0 = 261.6256
         for ((timbre, levels) in expect) {

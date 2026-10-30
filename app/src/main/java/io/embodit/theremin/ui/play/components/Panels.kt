@@ -120,10 +120,16 @@ internal fun PlacePanel(state: PlayUiState, filled: Boolean, onEvent: (PlayEvent
 
 /** The music stand, 450 x 320 dp on the instrument: one page at a time, the hint strip on top. */
 @Composable
-internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, onEvent: (PlayEvent) -> Unit) {
+internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, onEvent: (PlayEvent) -> Unit, onDrag: (Float, Float) -> Unit, onRecall: () -> Unit) {
     val (w, h) = PanelSpec.STAND_SIZE
     Glass(w.dp, h.dp, padding = 14.dp, spacing = 6.dp, refreshKey = listOf(filled, state.page, state.room, state.unavailable, state.library, state.language(), state.settings.handed)) {
         if (!filled) return@Glass
+        // v0.1.4: the stand rides above the instrument facing the user; the bar moves it, 叫回 puts it back (D21)
+        Row(modifier = Modifier.fillMaxWidth().height(28.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.width(80.dp))
+            DragHandle(onDrag, Modifier.weight(1f))
+            WordButton("stand_recall", rs(R.string.action_recall_stand), onRecall, minWidth = 80.dp, height = 28.dp)
+        }
         HintStrip(state, onEvent)
         when {
             state.unavailable -> UnavailablePage(onEvent)
@@ -650,12 +656,11 @@ internal fun Segments(items: List<Pair<String, String>>, selected: Int, onSelect
 
 /** Grab bar on top of a world-fixed panel: dragging it (gaze + pinch, or the controller ray) moves the panel in its own plane. */
 @Composable
-private fun DragHandle(onDrag: (Float, Float) -> Unit) {
+private fun DragHandle(onDrag: (Float, Float) -> Unit, modifier: Modifier = Modifier.fillMaxWidth()) {
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     androidx.compose.foundation.layout.Box(
         modifier =
-            Modifier
-                .fillMaxWidth()
+            modifier
                 .height(20.dp)
                 .pointerInput(Unit) { detectDragGestures { change, d -> change.consume(); onDrag(d.x / density, d.y / density) } },
         contentAlignment = Alignment.Center,

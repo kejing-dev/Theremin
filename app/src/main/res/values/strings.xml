@@ -48,13 +48,13 @@
     <string name="octave_high">High</string>
     <string name="octave_low">Low</string>
     <string name="octave_mid">Middle</string>
-    <string name="place_finding">Looking for a desk… glance at yours</string>
+    <string name="place_finding">The theremin appears beside this panel</string>
     <string name="place_loading">Tuning…</string>
     <string name="place_noplane">No access to desk information</string>
     <string name="place_placing">Point at the desk and pinch to put it down</string>
     <string name="place_snapped">Lined up with the edge · pinch to place</string>
     <string name="place_stick">Thumbstick left / right turns it</string>
-    <string name="place_title">Put the theremin on your desk</string>
+    <string name="place_title">Place the theremin</string>
     <string name="place_title_noplane">Air Theremin</string>
     <string name="practice_done_short">Done!</string>
     <string name="practice_hold">Hold %1$s for %2$d s</string>
@@ -85,7 +85,8 @@
     <string name="timbre_warm">Warm</string>
     <string name="unavail_reason">Hand tracking is off or the app is not in full space. Turn it on in Settings.</string>
     <string name="unavail_title">Hands and controllers cannot be tracked right now</string>
-    <string name="hint_no_marker">Point at floor or desk, pinch: marker</string>
+    <string name="hint_no_marker">Pinch the base to move it anywhere</string>
     <string name="hint_marker_ready">Marker set</string>
     <string name="action_recall">Bring here</string>
+    <string name="action_recall_stand">Recall</string>
 </resources>

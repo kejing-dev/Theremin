@@ -132,3 +132,13 @@ Audio checks: `hand=0.31,0.12 recordwav=2` then `adb pull /data/data/io.embodit.
 - Place panel is world-fixed (taste D21): `Follower` sets it once, then it moves only by its grab bar
   (`PlayScene.dragPanel`) or 「叫回面前」 (`recallPanel`). Do not bring back lazy follow or per-frame facing.
   QA debug: `paneldrag=dx,dy`, probe click `place_recall`.
+
+## v0.1.4
+
+- Placement = world anchor (`platform/anchor/InstrumentAnchor`), no desk needed: the instrument appears in the air
+  beside the place panel; any resting pose replaces the anchor; next launch restores it before SceneReady.
+- Drag any time: controller trigger 0.3 s on the cabinet, or pinch 0.3 s with the palm in `GrabRules` (never the
+  playing zones). Debug `move=dx,dy,dz`.
+- Music stand: `StandPlacement` above the instrument, yaw-only towards the user, grab bar + 叫回 (`standdrag`, `standrecall`).
+- Sound: `OneEuro.skipRepeats` (the 4 ms audio loop must not re-feed one tracker point), two-stage glides, buffer
+  3 bursts growing on underrun, room reverb. `PerformanceRenderTest` renders before / after into build/render.

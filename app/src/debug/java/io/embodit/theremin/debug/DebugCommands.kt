@@ -40,7 +40,7 @@ internal object DebugCommands {
             "lang", "mirror", "scale", "octave", "curve", "quantize", "snap", "timbre", "mute", "coach_reset", "freeze_off", "freeze",
             "source", "desk", "plane", "state", "place", "seed", "library", "lesson", "song", "slow", "step", "beat", "completetarget", "done", "score",
             "coach", "page", "settings", "menu", "back", "replace", "marker", "tomarker", "hand", "joints", "pinch", "handpath", "labeltest", "ui",
-            "spatialaudio", "recordwav", "pitchinfo", "dump", "hmd", "bounds", "planes", "park", "paneldrag", "exit",
+            "spatialaudio", "recordwav", "pitchinfo", "dump", "hmd", "bounds", "planes", "park", "paneldrag", "move", "standdrag", "standrecall", "exit",
         )
 
     private var pathThread: Thread? = null
@@ -144,6 +144,9 @@ internal object DebugCommands {
             "planes" -> scene?.planesSummary()?.forEach { ThLog.i(it) } ?: ThLog.i(NO_SCENE)
             "park" -> ThLog.i(scene?.parkPanel() ?: NO_SCENE)
             "paneldrag" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 2 }?.let { (x, y) -> ThLog.i(scene?.dragPanelDebug(x, y) ?: NO_SCENE) }
+            "move" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 3 }?.let { (x, y, z) -> ThLog.i(scene?.debugMove(x, y, z) ?: NO_SCENE) }
+            "standdrag" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 2 }?.let { (x, y) -> scene?.dragStand(x, y); ThLog.i("STAND drag $x,$y") }
+            "standrecall" -> scene?.recallStand()
             else -> host.dispatch(PlayEvent.Debug(key, value))
         }
     }

@@ -68,6 +68,19 @@ object ThProbe {
 
         fun dragPanelDebug(dxDp: Float, dyDp: Float): String
 
+
+        /** Debug `move=dx,dy,dz`: drags the instrument by that offset (m) and releases it. */
+
+        fun debugMove(dx: Float, dy: Float, dz: Float): String
+
+
+        /** Debug `standdrag=dx,dy` (dp) / `standrecall`. */
+
+        fun dragStand(dxDp: Float, dyDp: Float)
+
+
+        fun recallStand()
+
         fun recenter(): String
 
         /** One `PITCH ...` line: d, s, f, cents, v, sources, buffer latency, state. */
