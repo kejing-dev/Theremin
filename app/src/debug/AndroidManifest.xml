@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug builds only: QA hooks driven over adb (spatial content cannot be tapped through adb);
+             see DebugCommands.kt for the broadcast syntax. -->
+        <receiver
+            android:name=".debug.DebugCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.embodit.theremin.DEBUG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app icon background: walnut brown, registered for Air Theremin in the factory's icon colour list (design appIcon.background) -->
+    <color name="ic_launcher_background">#4A2C1A</color>
+</resources>
