@@ -118,6 +118,10 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var frontSeen = 0
     private var placedAtMs = NEVER
     private var layoutLogged = 0
+    private var frameNo = 0L
+    private var placeVisibleMs = NEVER
+    private var placeVisibleFrame = 0L
+    private var placedFromDefaultHead = false
 
     // ---- the user's marker (v0.1.2, taste D1): where the instrument goes on "移到标记处"
     private class Marker(val pose: InstrumentPose, val point: Vec3)
@@ -183,7 +187,14 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             setQuaternion(rotation)
         }
         stageRoot = root
-        val rig = PanelRig(root) { id, shown -> panelShown[id] = shown }
+        val rig = PanelRig(root) { id, shown ->
+            panelShown[id] = shown
+            if (shown && id == PanelSpec.PLACE && placeVisibleMs == NEVER) {
+                placeVisibleMs = SystemClock.elapsedRealtime()
+                placeVisibleFrame = frameNo
+                ThLog.i("STARTUP place panel visible t=${ThLog.sinceStartMs()} room=${ui.room}")
+            }
+        }
         this.rig = rig
         for (id in PanelSpec.pool) {
             val (w, h) = PanelSpec.size(id)
@@ -197,7 +208,10 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         follower.reset()
         hasHead = false
         headSinceMs = NEVER
+        placedFromDefaultHead = false
+        placeVisibleMs = NEVER
         layoutLogged = 0
+        ThLog.i("STARTUP scene attach t=${ThLog.sinceStartMs()}")
         buildJob =
             scope.launch {
                 try {
@@ -211,7 +225,32 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         ThLog.i("REALITY planes=off mesh=off occlusion=none colliders=app-only (D24)")
     }
 
+    /**
+     * q3-1 (D1 "一打开就要看得见"): the instrument's meshes and materials keep the engine busy for seconds on a cold start
+     * (3 - 13 s on the emulator) and the place panel was not drawn before they were done. So the build waits until the
+     * loading panel ("正在调音…" + bar) has been on screen for [PANEL_LEAD_MS] / [PANEL_LEAD_FRAMES], or until
+     * [PANEL_WAIT_MAX_MS] after the scene attached (not after the process start: on the emulator the Stage itself
+     * opens 7 - 8 s after launch), whichever comes first.
+     */
+    private suspend fun awaitLoadingPanel() {
+        val attachedAt = SystemClock.elapsedRealtime()
+        while (stageRoot != null) {
+            val age = ThLog.sinceStartMs()
+            val shownFor = if (placeVisibleMs == NEVER) -1L else SystemClock.elapsedRealtime() - placeVisibleMs
+            if (shownFor >= PANEL_LEAD_MS && frameNo - placeVisibleFrame >= PANEL_LEAD_FRAMES) {
+                ThLog.i("STARTUP build starts t=$age after panel ${shownFor} ms")
+                return
+            }
+            if (SystemClock.elapsedRealtime() - attachedAt >= PANEL_WAIT_MAX_MS) {
+                ThLog.w("STARTUP build starts t=$age without the panel (visible=${placeVisibleMs != NEVER} head=$hasHead)")
+                return
+            }
+            delay(FRAME_MS)
+        }
+    }
+
     private suspend fun build(root: Entity) {
+        awaitLoadingPanel()
         val t0 = SystemClock.elapsedRealtime()
         val sh = SharedResources()
         shared = sh
@@ -224,7 +263,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         buildInstrument(root, m, sh, layoutOf(ui))
         attached = true
         startAudio()
-        ThLog.i("SCENE attached build_ms=${SystemClock.elapsedRealtime() - t0}")
+        ThLog.i("SCENE attached build_ms=${SystemClock.elapsedRealtime() - t0} t=${ThLog.sinceStartMs()}")
         render(ui, force = true)
         restoreAnchor()
         sink(PlayEvent.SceneReady)
@@ -524,6 +563,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         val dt = if (lastFrameMs == NEVER) 0f else ((now - lastFrameMs) / 1000f).coerceIn(0f, 0.25f)
         if (lastFrameMs != NEVER) frameGapMs = now - lastFrameMs
         lastFrameMs = now
+        frameNo++
         headTracker.pose()?.let {
             // the all-zero / identity pose before tracking is ready is not a head (D1 / D9, sign-hands lesson)
             if (PlaceUpright.validHead(it.position, it.rotation)) {
@@ -536,16 +576,33 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         rig.onFrame(now)
         rig.stowBehind(head.view)
         val state = ui
-        if (!state.placed && hasHead) {
-            // D21 (v0.1.3): set once where it first appears, then fixed in the world; moved only by its handle or 叫回面前
-            follower.follow(head, now)
-            rig[PanelSpec.PLACE]?.place(follower.pose.position, follower.rotation, 1f)
+        if (!state.placed) {
+            // D21 (v0.1.3): set once where it first appears, then fixed in the world; moved only by its handle or 叫回面前.
+            // q3-1 (D1): no valid head HEAD_WAIT_MS after launch -> the Stage's default eye pose, so the loading panel shows
+            // anyway; the first valid head then slides it to where it belongs (once).
+            val startHead =
+                when {
+                    hasHead -> head
+                    ThLog.sinceStartMs() >= HEAD_WAIT_MS -> DEFAULT_HEAD
+                    else -> null
+                }
+            if (startHead != null) {
+                if (follower.follow(startHead, now) && !hasHead && !placedFromDefaultHead) {
+                    placedFromDefaultHead = true
+                    ThLog.w("STARTUP no valid head at t=${ThLog.sinceStartMs()}: place panel from the default eye pose")
+                }
+                if (hasHead && placedFromDefaultHead) {
+                    placedFromDefaultHead = false
+                    follower.park(head, now)
+                }
+                rig[PanelSpec.PLACE]?.place(follower.pose.position, follower.rotation, 1f)
+            }
         }
+        layoutLog(state)
         if (!attached) return
         val hs = hands.pollSupport()
         val cs = controller.pollSupport()
         markerFrame(state)
-        layoutLog(state, now)
         if (state.placed) {
             placeStand(state, rig, dt)
             dragFrame(state, now, dt)
@@ -559,22 +616,32 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         }
     }
 
-    /** D1 "一打开就要看得见": 1 / 3 / 5 s after the head is first valid, log where the panel and the instrument are relative to it. */
-    private fun layoutLog(state: PlayUiState, now: Long) {
-        if (!hasHead || headSinceMs == NEVER || layoutLogged >= 3) return
-        val marks = longArrayOf(1000L, 3000L, 5000L)
-        if (now - headSinceMs < marks[layoutLogged]) return
+    /**
+     * D1 "一打开就要看得见" (q3-1: timed from the process start, not from the scene build): at 1 / 3 / 5 s after launch,
+     * log every panel and the instrument: Stage position, shown (placed in view) / visible (drawn), distance and
+     * direction from the head. Logged on the first frame past each mark; `age_ms` is the real time of the line.
+     */
+    private fun layoutLog(state: PlayUiState) {
+        if (layoutLogged >= LAYOUT_MARKS_MS.size) return
+        val age = ThLog.sinceStartMs()
+        val markMs = LAYOUT_MARKS_MS[layoutLogged]
+        if (age < markMs) return
         layoutLogged++
         val rig = rig ?: return
+        val tag = "LAYOUT t+${markMs / 1000}s age_ms=$age"
         fun rel(p: Vec3): String {
+            if (!hasHead) return "head=none"
             val d = p - head.position
             val flat = Vec3(d.x, 0f, d.z).length
             val yawDeg = Math.toDegrees(PlaceRules.angle(kotlin.math.atan2(-d.x, -d.z), PlaceUpright.yawOf(head.forward, 0f)).toDouble())
             val pitchDeg = Math.toDegrees(kotlin.math.atan2(d.y, flat).toDouble())
             return String.format(Locale.US, "dist=%.2f yaw=%+.0f pitch=%+.0f", d.length, yawDeg, pitchDeg)
         }
-        for (slot in rig.all) if (slot.shown) ThLog.i("LAYOUT t+${marks[layoutLogged - 1] / 1000}s panel=${slot.id} pos=${ThLog.pos(slot.position)} tilt=${ThLog.f(PlaceUpright.tiltDeg(slot.rotation), 2)} ${rel(slot.position)}")
-        state.pose?.let { ThLog.i("LAYOUT t+${marks[layoutLogged - 1] / 1000}s instrument pos=${ThLog.pos(it.center)} shown=${state.placed} ${rel(it.center)}") }
+        ThLog.i("$tag head=${if (hasHead) ThLog.pos(head.position) else "none"} room=${state.room} built=$attached")
+        for (slot in rig.all) ThLog.i("$tag panel=${slot.id} pos=${ThLog.pos(slot.position)} shown=${slot.shown} visible=${panelShown[slot.id] == true} tilt=${ThLog.f(PlaceUpright.tiltDeg(slot.rotation), 2)} ${rel(slot.position)}")
+        val pose = state.pose
+        if (pose == null) ThLog.i("$tag instrument pos=none shown=false built=$attached")
+        else ThLog.i("$tag instrument pos=${ThLog.pos(pose.center)} shown=${state.placed && attached} built=$attached ${rel(pose.center)}")
     }
 
     private fun fallbackInputs(state: PlayUiState): RoleInputs {
@@ -1012,5 +1079,15 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
 
         /** 15 degrees to the viewer's left (design `panels.placePanel`); distance and drop from [PlaceUpright] (D9). */
         private const val PLACE_BEARING_DEG = -15f
+
+        /** q3-1 (D1): the cold-start timings, all from the process start. */
+        private val LAYOUT_MARKS_MS = longArrayOf(1000L, 3000L, 5000L)
+        private const val HEAD_WAIT_MS = 1200L
+        private const val PANEL_LEAD_MS = 700L
+        private const val PANEL_LEAD_FRAMES = 4L
+        private const val PANEL_WAIT_MAX_MS = 6000L
+
+        /** The Stage's default eye pose (standing, looking down -Z): only until the first valid head arrives. */
+        private val DEFAULT_HEAD = HeadPose(Vec3(0f, 1.6f, 0f), Quat4.IDENTITY)
     }
 }

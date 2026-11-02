@@ -12,10 +12,13 @@ android {
         applicationId = "io.embodit.theremin"
         minSdk = 35
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // arm64-v8a only, also on the x86_64 emulator: the PICO runtime's client library ships for arm64-v8a only
+        // (an x86_64 install dies in SpatialApplication.onCreate with UnsatisfiedLinkError, v0.1.6 test). Under the emulator's
+        // houdini translation the runtime library load alone takes ~6 s of a cold start; on the headset it takes 1 ms.
         ndk { abiFilters.add("arm64-v8a") }
     }
 

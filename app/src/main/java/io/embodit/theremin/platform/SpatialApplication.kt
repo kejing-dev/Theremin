@@ -8,6 +8,7 @@ class SpatialApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         ThGraph.appContext = applicationContext
+        ThLog.i("STARTUP app t=${ThLog.sinceStartMs()}")
         launch(::mainApp)
     }
 }

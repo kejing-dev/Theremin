@@ -89,7 +89,7 @@ On the emulator (debug build) an empty injection source is present from the star
 
 | Shot | Keys |
 | --- | --- |
-| S01 | launch, shoot within 1 s |
+| S01 | launch; on the headset the loading panel is up ~1.7 s after the process starts. On the emulator the Stage itself opens 3.5 - 8 s after launch (arm64 under houdini) and at idle fps the shot lags the log by seconds: go by `STARTUP place panel visible t=` |
 | S03 | shoot right after S01 (the instrument appears beside the panel within a second); `replace` returns to it |
 | S06 | `marker=floor tomarker` (instrument on its stand on the virtual floor) |
 | S04 / S05 / S20 | gone in v0.1.5 (no desk placing, no plane access; taste D24) |
@@ -166,3 +166,17 @@ where the monitor stands. The SDK has no default occlusion (checked core / sense
   `exit=confirm`, `exit=cancel`; probe names `exit_app`, `exit_confirm`, `exit_cancel`.
 - Stand panel 450 x 560 dp (was 410): every row / button / segment control is 48 dp now (B19; the 34-40 dp rows put the segment text off-centre) and the Settings page ends with the exit row; `tomarker` debug key fixed (it was unknown to the ViewModel).
 - `LAYOUT t+1/3/5s` log lines: panel / instrument distance, yaw, pitch relative to the head, panel tilt (D1 "一打开就要看得见").
+
+## v0.1.6 — loading panel first, timings from the process start (QA #3 q3-1 / q3-2)
+
+- Cold start (taste D1): `PlayScene.awaitLoadingPanel()` holds the instrument build until the place panel ("正在调音…" + bar)
+  has been drawn for 700 ms / 4 frames (at most 6 s after the scene attaches). With no valid head 1.2 s after launch the panel
+  is placed from the Stage's default eye pose and slides to the real one once the head is valid.
+- Log lines, all timed from the process start (`ThLog.sinceStartMs()`): `STARTUP app|scene attach|place panel visible|build starts t=`,
+  `SCENE attached build_ms= t=`, and `LAYOUT t+1s|3s|5s age_ms=` with the head, every panel (pos, shown, visible, distance / yaw /
+  pitch from the head) and the instrument (pos, shown, built).
+- Headset v0.1.6: Stage 0.38 s, panel visible 1.65 s, scene built 4.1 s. Emulator: Stage 7.1 - 7.5 s (about 6 s of it is
+  `SpatialClient Load lib:spatial_client` under houdini; the runtime client library is arm64-v8a only, an x86_64 install crashes
+  with UnsatisfiedLinkError, so `abiFilters` stays arm64-v8a). Details: `../spatial-app-factory/apps/theremin/build/ui-audit.md`.
+- B19: the home timbre "chip" is a 48 dp `WordButton` now (SpatialUI `Chip` is 32 dp at most); probe name still `timbre_chip`, 96 x 48 dp in zh and en.
+

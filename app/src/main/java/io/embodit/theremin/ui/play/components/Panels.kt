@@ -34,7 +34,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.pico.spatial.ui.design.Chip
 import com.pico.spatial.ui.design.Icon
 import com.pico.spatial.ui.design.LinearProgressDefaults
 import com.pico.spatial.ui.design.LinearProgressIndicator
@@ -250,7 +249,8 @@ private fun ColumnScope.HomePage(state: PlayUiState, onEvent: (PlayEvent) -> Uni
     Spacer(Modifier.weight(1f))
     Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (state.controllerSource) Icon(painter = painterResource(R.drawable.ic_controller), contentDescription = rs(R.string.controller_source), modifier = Modifier.size(22.dp), tint = PicoTheme.colorScheme.labelPrimary)
-        Chip(label = { Text(text = timbreName(state.settings.timbre), maxLines = 1, softWrap = false) }, onClick = { onEvent(PlayEvent.SettingsClicked(true)) }, modifier = Modifier.probe("timbre_chip") { onEvent(PlayEvent.SettingsClicked(true)) })
+        // q3-2 (B19): the timbre opens Settings, so it is a 48 dp worded button (the SpatialUI Chip is 32 dp at most)
+        WordButton("timbre_chip", timbreName(state.settings.timbre), { onEvent(PlayEvent.SettingsClicked(true)) }, minWidth = 96.dp, height = 48.dp)
         Spacer(Modifier.weight(1f))
         Key("mute", if (state.settings.muted) R.drawable.ic_mute else R.drawable.ic_volume, rs(if (state.settings.muted) R.string.action_unmute else R.string.action_mute), selected = state.settings.muted) { onEvent(PlayEvent.MuteToggled) }
         Key("settings", R.drawable.ic_settings, rs(R.string.settings_title)) { onEvent(PlayEvent.SettingsClicked(false)) }

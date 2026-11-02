@@ -1,5 +1,7 @@
 package io.embodit.theremin.platform
 
+import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import io.embodit.theremin.domain.model.Quat4
 import io.embodit.theremin.domain.model.Vec3
@@ -35,4 +37,7 @@ object ThLog {
         if (q == null) "null" else String.format(Locale.US, "q(%.5f, %.5f, %.5f, %.5f)", q.x, q.y, q.z, q.w)
 
     fun f(v: Float, decimals: Int = 2): String = String.format(Locale.US, "%.${decimals}f", v)
+
+    /** Milliseconds since this process started (D1 timings are taken from the launch, not from the scene build). */
+    fun sinceStartMs(): Long = SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()
 }
