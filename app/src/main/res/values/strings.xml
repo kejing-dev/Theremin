@@ -42,6 +42,8 @@
     <string name="listen_lower">Lower your %1$s hand first</string>
     <string name="menu_coach">Show the guide again</string>
     <string name="menu_front">Move to marker</string>
+    <string name="last_spot_moved">Moved in front of you</string>
+    <string name="action_last_spot">Back to last spot</string>
     <string name="menu_replace">Place again</string>
     <string name="mode_free">Free play</string>
     <string name="mode_practice">Practice</string>

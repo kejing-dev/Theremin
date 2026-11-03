@@ -102,6 +102,9 @@ object ThProbe {
         /** Sets the marker on the Stage floor beside the panel (`marker=floor`; `desk` is accepted and does the same). */
         fun debugMarker(kind: String): String
 
+        /** `anchorat=behind|front|right`: save the anchor there for the next cold start (v0.1.8, D9). */
+        fun debugAnchorAt(where: String): String
+
         /** Asymmetric "F↑" test texture on every 3D label. */
         fun setLabelTest(on: Boolean)
     }

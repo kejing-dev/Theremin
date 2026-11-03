@@ -134,6 +134,14 @@ class PlayViewModel(context: Context) : ViewModel() {
             is PlayEvent.PlaceRequested -> place(event)
             PlayEvent.MarkerSet -> set { it.copy(markerReady = true, hint = Hint.MARKER_READY) }
             PlayEvent.NoMarker -> set { it.copy(hint = Hint.NO_MARKER) }
+            is PlayEvent.LastSpotOffered -> {
+                ThLog.i("LASTSPOT offered=${event.offered}")
+                set { it.copy(lastSpot = event.offered) }
+            }
+            PlayEvent.LastSpotClicked -> {
+                ThLog.i("LASTSPOT clicked offered=${_state.value.lastSpot}")
+                set { it.copy(lastSpot = false, lastSpotSerial = it.lastSpotSerial + 1, page = if (it.page == Page.MENU) Page.HOME else it.page) }
+            }
             PlayEvent.MoveToMarkerClicked -> {
                 findJob?.cancel()
                 set { it.copy(frontSerial = it.frontSerial + 1, page = if (it.page == Page.MENU) Page.HOME else it.page) }
@@ -500,6 +508,8 @@ class PlayViewModel(context: Context) : ViewModel() {
             "menu" -> onEvent(PlayEvent.MoreClicked)
             "back" -> back()
             "replace" -> onEvent(PlayEvent.ReplaceClicked)
+            // v0.1.8: the same event as the 放回上次的位置 buttons
+            "lastspot" -> onEvent(PlayEvent.LastSpotClicked)
             // the same path as the user's: `exit` opens the confirmation, `exit=confirm` presses 退出, `exit=cancel` 取消
             "exit" -> when (value) {
                 "confirm" -> onEvent(PlayEvent.ExitConfirmed)
@@ -546,6 +556,7 @@ class PlayViewModel(context: Context) : ViewModel() {
             .put("placed", st.placed)
             .put("onStand", st.onStand)
             .put("awaitingMarker", st.awaitingMarker)
+            .put("lastSpot", st.lastSpot)
             .put("markerReady", st.markerReady)
             .put("pose", st.pose?.let { "${ThLog.pos(it.center)} yaw=${ThLog.f(Math.toDegrees(it.yaw.toDouble()).toFloat(), 1)}" })
             .put("settings", st.settings.toString())

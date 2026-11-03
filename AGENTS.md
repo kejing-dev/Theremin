@@ -202,3 +202,23 @@ Headset feedback on v0.1.6: "用手捏住拖动那个 UI 面板…面板会一�
   drag log into the still-hand number, `tools/drag_plot.py` draws it. Emulator results and logs: `../spatial-app-factory/apps/theremin/build/ui-audit.md` (v0.1.7).
 - Emulator harness: `MINFPS=30 tools/harness/emu.sh drag …` when two emulators run (this PC reaches ~38 fps).
 - Not verified yet: a real hand pinch-drag on the headset (D21 requires it; the headset was on pc1).
+
+## v0.1.8 — the saved spot never lands behind you (taste D9), pinch the cabinet to drag
+
+Headset feedback on v0.1.7: "空中琴的面板直接没了？？？ fix" / "琴一开始出现的位置是我的右后方，应该在正前方啊，并且可以捏住拖动的".
+Root cause (headset log): the world anchor was restored unconditionally; it is a real-room spot, so with the user facing another way
+it came back 156 deg behind-right at 0.53 m, the place panel hid (room PLAYING) and the music stand rode along to 114 deg behind.
+- `domain/usecase/RestoreRules`: after a valid head (2.5 s at most), the anchor is restored only when the instrument AND the stand
+  are within 45 deg of the head's heading and 0.5 - 2.5 m away. Otherwise the first-run flow puts the instrument beside the place
+  panel (in front) and the stand offers 「放回上次的位置」 (home row `last_spot`, More row `menu_last_spot`). Log `RESTORE ... restore=`.
+- The waiting pose is not saved as the anchor any more; an unrestored anchor stays offered until the user moves the instrument.
+  `onMoved` only moves the instrument when it sits on the anchor.
+- Drag the instrument: the `cabinet` collider is a target of the SpatialView's `detectSpatialDragGesture` (same fixed-frame
+  detector as the v0.1.7 grab bars): gaze + pinch, hand pinch, controller ray + trigger; it stays where released. Log `GRIP ... panel=instrument`.
+  The 0.3 s hold paths in `dragFrame` remain; whichever starts first owns the drag.
+- LAYOUT lines carry `front_ok` (+-45 deg, 0.5 - 2.5 m); marks t+1/3/5/8 s and `LAYOUT placed+1s|3s` after the instrument first stands.
+- Debug: `anchorat=behind|front|right` (save the anchor there for the next cold start), `lastspot` (= the button).
+- `RestoreTest` (7): the headset v0.1.7 numbers, turned 180 deg before a cold start, saved spot in / out of view, too far / near.
+- Headset (v0.1.8, cold start, user's real anchor / front / behind): see `../spatial-app-factory/apps/theremin/build/ui-audit.md` (v0.1.8).
+  A headset nobody wears falls asleep and the frame loop stops: keep it awake with `adb shell input keyevent KEYCODE_WAKEUP` every 2 s.
+- QA shots: `anchorat=behind` then relaunch (wait for the old Stage to close, else "current full space don't allow start fullscreen") → S08 with the last-spot row.

@@ -42,6 +42,8 @@
     <string name="listen_lower">先放下%1$s手</string>
     <string name="menu_coach">重看引导</string>
     <string name="menu_front">移到标记处</string>
+    <string name="last_spot_moved">琴放到你面前了</string>
+    <string name="action_last_spot">放回上次的位置</string>
     <string name="menu_replace">重新摆放</string>
     <string name="mode_free">自由弹</string>
     <string name="mode_practice">练习</string>

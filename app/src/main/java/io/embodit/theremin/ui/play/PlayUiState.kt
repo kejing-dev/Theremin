@@ -92,6 +92,9 @@ data class PlayUiState(
     /** Serial numbers the scene acts on once: move to the marker (or the waiting anchor), turn 15 degrees. */
     val frontSerial: Int = 0,
     val turnSerial: Int = 0,
+    /** v0.1.8 (D9): the saved spot was not restored (behind / off to the side / too far): 「放回上次的位置」 is offered. */
+    val lastSpot: Boolean = false,
+    val lastSpotSerial: Int = 0,
     val headNear: Boolean = false,
     /** D26: "退出应用" pressed, the confirmation is showing. */
     val exitConfirm: Boolean = false,
@@ -151,6 +154,11 @@ sealed interface PlayEvent {
 
     /** "移到标记处" on the place panel, the hint strip or the More page. */
     data object MoveToMarkerClicked : PlayEvent
+
+    /** v0.1.8 (D9): the scene offers (or withdraws) the saved spot it did not restore; the user puts the instrument back there. */
+    data class LastSpotOffered(val offered: Boolean) : PlayEvent
+
+    data object LastSpotClicked : PlayEvent
 
     data object TurnClicked : PlayEvent
 

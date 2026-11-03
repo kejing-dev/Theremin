@@ -36,11 +36,11 @@ internal fun PlayStage(state: PlayUiState, vm: PlayViewModel, scene: PlayScene, 
                     detectSpatialTapGesture(context = context, targetedToEntity = TargetEntity.any()) { value -> scene.onSpatialTap(value) }
                 }
                 .pointerInput(Unit) {
-                    // v0.1.7 (D21): the panels' grab bars. Aimed at their grab colliders and measured here, on the SpatialView that
+                    // v0.1.7 (D21): the panels' grab bars (v0.1.8: and the instrument's cabinet). Aimed at their grab colliders and measured here, on the SpatialView that
                     // never moves: the same detector on the moving panel reports the pointer relative to the panel (feedback jitter)
                     detectSpatialDragGesture(
                         context = context,
-                        targetedToEntity = TargetEntity.any { scene.isGrab(it) },
+                        targetedToEntity = TargetEntity.any { scene.isDragTarget(it) },
                         onDragStart = { at, value -> scene.onGrabStart(value, at) },
                         onDragEnd = { scene.onGrabEnd(cancelled = false) },
                         onDragCancel = { scene.onGrabEnd(cancelled = true) },

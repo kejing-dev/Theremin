@@ -51,6 +51,7 @@ import io.embodit.theremin.domain.model.Quantize
 import io.embodit.theremin.domain.model.Scale
 import io.embodit.theremin.domain.model.Timbre
 import io.embodit.theremin.domain.play.Lessons
+import io.embodit.theremin.platform.ThLog
 import io.embodit.theremin.ui.play.Hint
 import io.embodit.theremin.ui.play.LanguagePref
 import io.embodit.theremin.ui.play.Library
@@ -117,7 +118,7 @@ internal fun ExitConfirmRow(onEvent: (PlayEvent) -> Unit) {
 @Composable
 internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, onEvent: (PlayEvent) -> Unit, onRecall: () -> Unit) {
     val (w, h) = PanelSpec.STAND_SIZE
-    Glass(w.dp, h.dp, padding = 14.dp, spacing = 6.dp, refreshKey = listOf(filled, state.page, state.room, state.unavailable, state.library, state.language(), state.settings.handed, state.exitConfirm)) {
+    Glass(w.dp, h.dp, padding = 14.dp, spacing = 6.dp, refreshKey = listOf(filled, state.page, state.room, state.unavailable, state.library, state.language(), state.settings.handed, state.exitConfirm, state.lastSpot)) {
         if (!filled) return@Glass
         // v0.1.4: the stand rides above the instrument facing the user; the bar moves it, 叫回 puts it back (D21)
         Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -134,7 +135,7 @@ internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, 
                 Page.PRACTICE -> PracticePage(state, onEvent)
                 Page.RESULT -> ResultPage(state, onEvent)
                 Page.SETTINGS -> SettingsPage(state, onEvent)
-                Page.MENU -> MenuPage(onEvent)
+                Page.MENU -> MenuPage(state, onEvent)
                 Page.ONBOARDING -> OnboardingPage(state, onEvent)
                 Page.SONG -> SongPage(state, vm, onEvent)
                 Page.SONG_RESULT -> SongResultPage(state, vm, onEvent)
@@ -246,6 +247,7 @@ private fun ColumnScope.HomePage(state: PlayUiState, onEvent: (PlayEvent) -> Uni
         center = true,
     )
     Spacer(Modifier.weight(1f))
+    if (state.lastSpot) LastSpotRow(onEvent)
     Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (state.controllerSource) Icon(painter = painterResource(R.drawable.ic_controller), contentDescription = rs(R.string.controller_source), modifier = Modifier.size(22.dp), tint = PicoTheme.colorScheme.labelPrimary)
         // q3-2 (B19): the timbre opens Settings, so it is a 48 dp worded button (the SpatialUI Chip is 32 dp at most)
@@ -254,6 +256,26 @@ private fun ColumnScope.HomePage(state: PlayUiState, onEvent: (PlayEvent) -> Uni
         Key("mute", if (state.settings.muted) R.drawable.ic_mute else R.drawable.ic_volume, rs(if (state.settings.muted) R.string.action_unmute else R.string.action_mute), selected = state.settings.muted) { onEvent(PlayEvent.MuteToggled) }
         Key("settings", R.drawable.ic_settings, rs(R.string.settings_title)) { onEvent(PlayEvent.SettingsClicked(false)) }
         Key("more", R.drawable.ic_more, rs(R.string.action_more)) { onEvent(PlayEvent.MoreClicked) }
+    }
+}
+
+/**
+ * v0.1.8 (D9 "恢复上次锚点也不能落在身后"): the saved spot was behind the user / off to the side / too far, so the
+ * instrument started in front of them; one press puts it back where it was last time.
+ */
+@Composable
+private fun LastSpotRow(onEvent: (PlayEvent) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = rs(R.string.last_spot_moved),
+            style = ThType.body,
+            color = PicoTheme.colorScheme.labelSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+            onTextLayout = { if (it.hasVisualOverflow) ThLog.w("OVERFLOW stand/last_spot_moved") },
+        )
+        WordButton("last_spot", rs(R.string.action_last_spot), { onEvent(PlayEvent.LastSpotClicked) }, minWidth = 150.dp, height = 48.dp)
     }
 }
 
@@ -467,8 +489,9 @@ private fun MenuRow(name: String, icon: Int, title: String, onClick: () -> Unit)
 }
 
 @Composable
-private fun ColumnScope.MenuPage(onEvent: (PlayEvent) -> Unit) {
+private fun ColumnScope.MenuPage(state: PlayUiState, onEvent: (PlayEvent) -> Unit) {
     BackTitle(rs(R.string.action_more), onEvent)
+    if (state.lastSpot) MenuRow("menu_last_spot", R.drawable.ic_retry, rs(R.string.action_last_spot)) { onEvent(PlayEvent.LastSpotClicked) }
     MenuRow("menu_front", R.drawable.ic_move, rs(R.string.menu_front)) { onEvent(PlayEvent.MoveToMarkerClicked) }
     MenuRow("menu_replace", R.drawable.ic_retry, rs(R.string.menu_replace)) { onEvent(PlayEvent.ReplaceClicked) }
     MenuRow("menu_coach", R.drawable.ic_hand, rs(R.string.menu_coach)) { onEvent(PlayEvent.ReplayCoachClicked) }

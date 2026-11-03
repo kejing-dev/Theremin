@@ -31,6 +31,7 @@ import io.embodit.theremin.domain.usecase.GrabRules
 import io.embodit.theremin.domain.usecase.PlaceRules
 import io.embodit.theremin.domain.usecase.PlaceUpright
 import io.embodit.theremin.domain.usecase.PanelDrag
+import io.embodit.theremin.domain.usecase.RestoreRules
 import com.pico.spatial.ui.foundation.gesture.SpatialDragValue
 import com.pico.spatial.ui.geometry.Offset3D
 import io.embodit.theremin.domain.usecase.StandPlacement
@@ -121,6 +122,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var frontSeen = 0
     private var placedAtMs = NEVER
     private var layoutLogged = 0
+    private var placedLogged = 0
     private var frameNo = 0L
     private var placeVisibleMs = NEVER
     private var placeVisibleFrame = 0L
@@ -146,6 +148,12 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var anchor: InstrumentAnchor? = null
     private var anchoredPose: InstrumentPose? = null
     private var saveJob: Job? = null
+
+    /** v0.1.8 (D9): the instrument sits on the saved anchor; the saved spot the launch did not restore (offered as 放回上次的位置). */
+    private var onAnchor = false
+    private var lastSpot: InstrumentAnchor.Saved? = null
+    private var lastSpotSeen = 0
+    private var sdkGrab = false
 
     /**
      * The stand's turn (null: face the user at once), the user's drag offset (instrument frame, metres; v0.1.7: never
@@ -231,8 +239,15 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     /** True for the invisible grab colliders over the panels' bars (the drag detector's target filter). */
     fun isGrab(entity: com.pico.spatial.core.ecs.Entity): Boolean = runCatching { entity.getName() }.getOrNull()?.startsWith(GRAB_PREFIX) == true
 
+    /** The drag detector's targets: the grab bars and (v0.1.8, "可以捏住拖动的") the instrument's cabinet collider. */
+    fun isDragTarget(entity: com.pico.spatial.core.ecs.Entity): Boolean = isGrab(entity) || runCatching { entity.getName() }.getOrNull() == CABINET
+
     fun onGrabStart(value: SpatialDragValue, atPx: Offset3D) {
         val name = value.targetEntity?.let { runCatching { it.getName() }.getOrNull() } ?: return
+        if (name == CABINET) {
+            startSdkGrab(value, atPx)
+            return
+        }
         val g = if (name == GRAB_PREFIX + PanelSpec.PLACE) placeGrip else if (name == GRAB_PREFIX + PanelSpec.STAND) standGrip else return
         grabbing = g
         grabSumPx = Vec3.ZERO
@@ -240,6 +255,10 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     }
 
     fun onGrabDrag(value: SpatialDragValue) {
+        if (sdkGrab) {
+            sdkGrabMove(value)
+            return
+        }
         val g = grabbing ?: return
         val a = value.dragAmount
         grabSumPx += Vec3(a.x, a.y, a.z)
@@ -249,8 +268,45 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     }
 
     fun onGrabEnd(cancelled: Boolean) {
+        if (sdkGrab) {
+            ThLog.i("GRIP end panel=instrument cancelled=$cancelled")
+            endDrag()
+            return
+        }
         grabbing?.end(cancelled)
         grabbing = null
+    }
+
+    /**
+     * v0.1.8 (headset v0.1.7 "应该在正前方啊，并且可以捏住拖动的"): the SDK drag on the cabinet's collider, the same detector
+     * and fixed frame as the grab bars (v0.1.7, no feedback jitter): gaze + pinch, a hand pinching the cabinet, or the
+     * controller ray + trigger. The instrument follows the pointer's Stage motion from where it was grabbed, its turn
+     * unchanged, and stays exactly where it is let go (D1). The 0.3 s hold paths in [dragFrame] stay for the cases the
+     * detector does not take; whichever starts first owns the drag.
+     */
+    private fun startSdkGrab(value: SpatialDragValue, atPx: Offset3D) {
+        val pose = ui.pose
+        if (!attached || !ui.placed || ui.unavailable || dragging || pose == null) {
+            ThLog.i("GRIP ignored panel=instrument placed=${ui.placed} dragging=$dragging")
+            return
+        }
+        grabSumPx = Vec3.ZERO
+        grabStartCenter = pose.center
+        startDrag(pose, byController = false)
+        sdkGrab = true
+        ThLog.i("GRIP start panel=instrument at_px=${fmt3(atPx)} pos=${ThLog.pos(pose.center)} ${rawOf(value)}")
+    }
+
+    private fun sdkGrabMove(value: SpatialDragValue) {
+        val a = value.dragAmount
+        grabSumPx += Vec3(a.x, a.y, a.z)
+        val zero = toStage(0f, 0f, 0f) ?: return
+        val now = toStage(grabSumPx.x, grabSumPx.y, grabSumPx.z) ?: return
+        val p = InstrumentPose(grabStartCenter + (now - zero), (dragPose ?: ui.pose ?: return).yaw)
+        dragPose = p
+        view?.place(p)
+        dragLogUntilMs = SystemClock.elapsedRealtime() + DRAG_LOG_MS
+        ThLog.i("GRIP move panel=instrument moved=${ThLog.pos(now - zero)} at=${ThLog.pos(p.center)} amount_px=${fmt3(a)} ${rawOf(value)}")
     }
 
     private fun fmt3(o: Offset3D): String = String.format(Locale.US, "%.1f,%.1f,%.1f", o.x, o.y, o.z)
@@ -326,6 +382,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         placedFromDefaultHead = false
         placeVisibleMs = NEVER
         layoutLogged = 0
+        placedLogged = 0
+        placedAtMs = NEVER
         ThLog.i("STARTUP scene attach t=${ThLog.sinceStartMs()}")
         buildJob =
             scope.launch {
@@ -413,19 +471,88 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         val ctx = ThGraph.appContext ?: return
         val a = InstrumentAnchor(ctx)
         anchor = a
-        a.onMoved = { p -> main.post { if (attached && !dragging && ui.placed) { anchoredPose = p; ThLog.i("ANCHOR moved -> ${ThLog.pos(p.center)}"); sink(PlayEvent.PlaceRequested(p, ui.onStand)) } } }
+        a.onMoved = { p ->
+            main.post {
+                when {
+                    // the instrument sits on the anchor: it follows a recalibration
+                    onAnchor && attached && !dragging && ui.placed -> { anchoredPose = p; ThLog.i("ANCHOR moved -> ${ThLog.pos(p.center)}"); sink(PlayEvent.PlaceRequested(p, ui.onStand)) }
+                    // not restored (v0.1.8): only the offered spot moves, the instrument stays in front of the user
+                    lastSpot != null -> { lastSpot = lastSpot?.copy(pose = p); ThLog.i("ANCHOR moved (offered spot) -> ${ThLog.pos(p.center)}") }
+                }
+            }
+        }
         a.start()
         val saved = a.load() ?: return
         if (ui.placed || !attached) return
+        // v0.1.8 (D9, headset v0.1.7 "琴一开始出现的位置是我的右后方"): the anchor is a real-room spot. Wait for a valid head,
+        // then bring it back only when the instrument and its stand are both in front of the user; else start in front
+        // (the first-run flow beside the place panel) and offer 「放回上次的位置」
+        val waitUntil = SystemClock.elapsedRealtime() + RESTORE_HEAD_WAIT_MS
+        while (!hasHead && SystemClock.elapsedRealtime() < waitUntil) delay(FRAME_MS)
+        if (ui.placed || !attached) return
+        val (_, hh) = PanelSpec.halfM(PanelSpec.STAND)
+        val d = RestoreRules.decide(saved.pose, head.position.takeIf { hasHead }, head.forward.takeIf { hasHead }, ui.settings.handed == Handed.RIGHT_PITCH, hh)
+        ThLog.i("RESTORE saved=${ThLog.pos(saved.pose.center)} yaw=${ThLog.f(Math.toDegrees(saved.pose.yaw.toDouble()).toFloat(), 1)} stand=${saved.onStand} head=${if (hasHead) ThLog.pos(head.position) else "none"} $d")
+        if (!d.restore) {
+            lastSpot = saved
+            onAnchor = false
+            sink(PlayEvent.LastSpotOffered(true))
+            return
+        }
         anchoredPose = saved.pose
+        onAnchor = true
         ThLog.i("ANCHOR restore at=${ThLog.pos(saved.pose.center)} yaw=${ThLog.f(Math.toDegrees(saved.pose.yaw.toDouble()).toFloat(), 1)} stand=${saved.onStand}")
         sink(PlayEvent.PlaceRequested(saved.pose, saved.onStand))
     }
 
-    /** Every new resting pose (placed, dragged, moved to a marker) replaces the anchor, 0.4 s after it settles. */
+    /** 「放回上次的位置」 (v0.1.8): the instrument goes back to the saved anchor the launch did not restore; the stand comes along. */
+    private fun putBackLastSpot() {
+        val saved = lastSpot ?: return ThLog.i("LASTSPOT none")
+        lastSpot = null
+        anchoredPose = saved.pose
+        onAnchor = true
+        recallStand()
+        ThLog.i("LASTSPOT back to=${ThLog.pos(saved.pose.center)} yaw=${ThLog.f(Math.toDegrees(saved.pose.yaw.toDouble()).toFloat(), 1)} stand=${saved.onStand}")
+        sink(PlayEvent.PlaceRequested(saved.pose, saved.onStand))
+    }
+
+    /** The user moved the instrument somewhere new: that is the spot to keep now, the old one is no longer offered. */
+    private fun dropLastSpot(why: String) {
+        if (lastSpot == null) return
+        lastSpot = null
+        ThLog.i("LASTSPOT withdrawn ($why)")
+        sink(PlayEvent.LastSpotOffered(false))
+    }
+
+    /**
+     * Debug `anchorat=behind|front|right` (QA of the D9 restore rule without walking): saves the anchor 1 m behind the user,
+     * 1.2 m ahead, or 1.2 m to the right; the next cold start then shows the decision (log `RESTORE`).
+     */
+    override fun debugAnchorAt(where: String): String {
+        if (!hasHead) return "ANCHORAT no head"
+        val h = PlaceUpright.heading(head.forward) ?: return "ANCHORAT no heading"
+        val right = Vec3(-h.z, 0f, h.x)
+        val dir = when (where) {
+            "behind" -> h * -1f
+            "right" -> right
+            else -> h
+        }
+        val dist = if (where == "behind") 1.0f else 1.2f
+        val c = head.position + dir * dist + Vec3(0f, -0.45f, 0f)
+        val pose = InstrumentPose(c, PlaceRules.yawTowards(c, head.position))
+        scope.launch { ThLog.i("ANCHORAT $where saved=${anchor?.save(pose, false)} at=${ThLog.pos(c)}") }
+        return "ANCHORAT $where at=${ThLog.pos(c)}"
+    }
+
+    /**
+     * Every new resting pose the user chose (dragged, moved to a marker, put back) replaces the anchor, 0.4 s after it
+     * settles. v0.1.8: the waiting pose beside the panel is not saved, so an unrestored anchor stays offered until the
+     * user moves the instrument themselves.
+     */
     private fun syncAnchor(state: PlayUiState) {
         val pose = state.pose ?: return
-        if (!state.placed || state.dragging || dragging || pose == anchoredPose) return
+        if (!state.placed || state.dragging || dragging || pose == anchoredPose || state.awaitingMarker) return
+        onAnchor = true
         anchoredPose = pose
         saveJob?.cancel()
         val stand = state.onStand
@@ -487,6 +614,9 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         anchor?.stop()
         anchor = null
         anchoredPose = null
+        onAnchor = false
+        lastSpot = null
+        sdkGrab = false
         standYaw = null
         standOffset = Vec3.ZERO
         standLift = null
@@ -557,6 +687,10 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             frontSeen = state.frontSerial
             moveToMarker(force)
         }
+        if (state.lastSpotSerial != lastSpotSeen) {
+            lastSpotSeen = state.lastSpotSerial
+            putBackLastSpot()
+        }
         // background: sound fades and pauses, providers stop; back in front they start again
         if (state.background && !previous.background) {
             audio?.pause()
@@ -589,6 +723,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             mk != null -> {
                 marker = null
                 markerView?.setAt(null)
+                dropLastSpot("marker")
                 // v0.1.3: turned to where the user stands now, once, then locked (taste D1 / D10)
                 val pose = PlaceRules.onFloor(mk.point, userAt() ?: mk.pose.center + Vec3(0f, 0f, 1f))
                 ThLog.i("MARKER move to=${ThLog.pos(pose.center)} yaw=${ThLog.f(Math.toDegrees(pose.yaw.toDouble()).toFloat(), 1)} user=${userAt()?.let { ThLog.pos(it) }}")
@@ -742,20 +877,26 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
      * direction from the head. Logged on the first frame past each mark; `age_ms` is the real time of the line.
      */
     private fun layoutLog(state: PlayUiState) {
-        if (layoutLogged >= LAYOUT_MARKS_MS.size) return
         val age = ThLog.sinceStartMs()
-        val markMs = LAYOUT_MARKS_MS[layoutLogged]
-        if (age < markMs) return
-        layoutLogged++
+        val tag: String
+        if (layoutLogged < LAYOUT_MARKS_MS.size && age >= LAYOUT_MARKS_MS[layoutLogged]) {
+            tag = "LAYOUT t+${LAYOUT_MARKS_MS[layoutLogged] / 1000}s age_ms=$age"
+            layoutLogged++
+        } else if (placedAtMs != NEVER && placedLogged < PLACED_MARKS_MS.size && SystemClock.elapsedRealtime() - placedAtMs >= PLACED_MARKS_MS[placedLogged]) {
+            // v0.1.8: the anchor decision can land after the last mark on a slow cold start; the same lines after the instrument first stands
+            tag = "LAYOUT placed+${PLACED_MARKS_MS[placedLogged] / 1000}s age_ms=$age"
+            placedLogged++
+        } else return
         val rig = rig ?: return
-        val tag = "LAYOUT t+${markMs / 1000}s age_ms=$age"
         fun rel(p: Vec3): String {
             if (!hasHead) return "head=none"
             val d = p - head.position
             val flat = Vec3(d.x, 0f, d.z).length
             val yawDeg = Math.toDegrees(PlaceRules.angle(kotlin.math.atan2(-d.x, -d.z), PlaceUpright.yawOf(head.forward, 0f)).toDouble())
             val pitchDeg = Math.toDegrees(kotlin.math.atan2(d.y, flat).toDouble())
-            return String.format(Locale.US, "dist=%.2f yaw=%+.0f pitch=%+.0f", d.length, yawDeg, pitchDeg)
+            // v0.1.8 (D1 / D9): the verdict the headset check reads: in front (+-45 deg of the heading) and 0.5 - 2.5 m away
+            val seen = RestoreRules.seen("", p, head.position, head.forward)
+            return String.format(Locale.US, "dist=%.2f yaw=%+.0f pitch=%+.0f front_ok=%b", d.length, yawDeg, pitchDeg, seen.ok)
         }
         ThLog.i("$tag head=${if (hasHead) ThLog.pos(head.position) else "none"} room=${state.room} built=$attached")
         for (slot in rig.all) ThLog.i("$tag panel=${slot.id} pos=${ThLog.pos(slot.position)} shown=${slot.shown} visible=${panelShown[slot.id] == true} tilt=${ThLog.f(PlaceUpright.tiltDeg(slot.rotation), 2)} ${rel(slot.position)}")
@@ -876,6 +1017,8 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
             if (!dragging) pinchGrab(state, pose, now)
             return
         }
+        // v0.1.8: a drag the SDK detector started on the cabinet (gaze + pinch, hand pinch, controller ray) moves in onGrabDrag
+        if (sdkGrab) return
         var p = dragPose ?: pose
         if (dragByController) {
             if (!down || s == null) {
@@ -946,8 +1089,10 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         dragging = false
         dragTriggerMs = NEVER
         mapper.suspended = false
+        sdkGrab = false
         val final = dragPose ?: return
         ThLog.i("DRAG end at=${ThLog.pos(final.center)} yaw=${ThLog.f(Math.toDegrees(final.yaw.toDouble()).toFloat(), 1)}")
+        dropLastSpot("drag")
         sink(PlayEvent.DragChanged(false, final))
     }
 
@@ -1239,8 +1384,11 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         private const val PLACE_BEARING_DEG = -15f
 
         /** q3-1 (D1): the cold-start timings, all from the process start. */
-        private val LAYOUT_MARKS_MS = longArrayOf(1000L, 3000L, 5000L)
+        private val LAYOUT_MARKS_MS = longArrayOf(1000L, 3000L, 5000L, 8000L)
+        private val PLACED_MARKS_MS = longArrayOf(1000L, 3000L)
         private const val HEAD_WAIT_MS = 1200L
+        private const val RESTORE_HEAD_WAIT_MS = 2500L
+        const val CABINET = "cabinet"
         private const val DRAG_LOG_MS = 1500L
         const val GRAB_PREFIX = "grab:"
 
