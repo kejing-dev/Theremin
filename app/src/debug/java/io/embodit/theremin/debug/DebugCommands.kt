@@ -31,7 +31,7 @@ import kotlin.math.sin
  * `octave=low|mid|high`, `scale=standard|wide`, `curve=soft|linear`, `quantize=off|light|strong`, `mirror=0|1`,
  * `mute=0|1`, `lang=zh|en|system`, `freeze=0|1`, `page=<Page>`, `library=basics|songs`, `settings`, `menu`,
  * `back`, `replace`, `exit` / `exit=confirm` / `exit=cancel` (D26, the user's own path); queries `dump`, `hmd`, `bounds`, `reality`
- * (= `planes`: D24 audit line), `park`, `ui=<control>`.
+ * (= `planes`: D24 audit line), `park`, `ui=<control>`; v0.1.7 `standinfo`, `dragmode=plane|free|freeze`.
  * Every state change logs `STATE Sxx...` under the tag `Theremin`.
  */
 internal object DebugCommands {
@@ -41,7 +41,7 @@ internal object DebugCommands {
             "lang", "mirror", "scale", "octave", "curve", "quantize", "snap", "timbre", "mute", "coach_reset", "freeze_off", "freeze",
             "source", "desk", "plane", "state", "place", "seed", "library", "lesson", "song", "slow", "step", "beat", "completetarget", "done", "score",
             "coach", "page", "settings", "menu", "back", "replace", "marker", "tomarker", "hand", "joints", "pinch", "handpath", "labeltest", "ui",
-            "spatialaudio", "recordwav", "pitchinfo", "dump", "hmd", "bounds", "planes", "reality", "park", "paneldrag", "move", "standdrag", "standrecall", "exit",
+            "spatialaudio", "recordwav", "pitchinfo", "dump", "hmd", "bounds", "planes", "reality", "park", "paneldrag", "move", "standdrag", "standrecall", "standinfo", "dragmode", "exit",
         )
 
     private var pathThread: Thread? = null
@@ -148,6 +148,8 @@ internal object DebugCommands {
             "move" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 3 }?.let { (x, y, z) -> ThLog.i(scene?.debugMove(x, y, z) ?: NO_SCENE) }
             "standdrag" -> value.split(",").mapNotNull { it.trim().toFloatOrNull() }.takeIf { it.size == 2 }?.let { (x, y) -> scene?.dragStand(x, y); ThLog.i("STAND drag $x,$y") }
             "standrecall" -> scene?.recallStand()
+            "standinfo" -> ThLog.i(scene?.standInfo() ?: NO_SCENE)
+            "dragmode" -> ThLog.i(scene?.dragMode(value) ?: NO_SCENE)
             else -> host.dispatch(PlayEvent.Debug(key, value))
         }
     }

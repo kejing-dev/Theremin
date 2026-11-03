@@ -82,6 +82,12 @@ object ThProbe {
 
         fun recallStand()
 
+        /** Debug `standinfo` (v0.1.7, D21): the stand's centre / top edge against the eyes. */
+        fun standInfo(): String
+
+        /** Debug `dragmode=plane|free|freeze` (v0.1.7): how a grab bar turns dragAmount into a world move. */
+        fun dragMode(name: String): String
+
         fun recenter(): String
 
         /** One `PITCH ...` line: d, s, f, cents, v, sources, buffer latency, state. */

@@ -64,7 +64,7 @@ wait_fast() {
   t0="$(devnow)"; ps fast on >/dev/null
   for i in $(seq 1 40); do
     f="$(lastfps "$t0")"
-    if [ -n "$f" ] && [ "$f" -ge 50 ]; then date +%s > "$STATE/fast_since"; return 0; fi
+    if [ -n "$f" ] && [ "$f" -ge "${MINFPS:-50}" ]; then date +%s > "$STATE/fast_since"; return 0; fi
     sleep 0.25
   done
   echo "WARN: emulator did not reach 50 fps after the posted focus-in" >&2

@@ -79,7 +79,7 @@ Keys (full list in `DebugCommands.kt`): `place=front` (`desk=`, `plane=`, `place
 `quantize=off|light|strong`, `mirror=0|1`, `mute=0|1`, `lang=zh|en|system`, `freeze=0|1`, `page=...`,
 `library=basics|songs`, `settings`, `menu`, `back`, `replace`, `exit` / `exit=confirm` / `exit=cancel` (D26, the user's path),
 `labeltest=1`, `recordwav=<s>` (files/rec.wav), `pitchinfo`, `dump`, `hmd`, `bounds`, `reality` (= `planes`; D24 audit lines),
-`marker=floor`, `tomarker`, `move=dx,dy,dz`, `paneldrag=dx,dy`, `standdrag=dx,dy`, `standrecall`, `park`, `ui=<control>`. Log tag `Theremin`; every state change logs
+`marker=floor`, `tomarker`, `move=dx,dy,dz`, `paneldrag=dx,dy`, `standdrag=dx,dy`, `standrecall`, `standinfo`, `dragmode=plane|free|freeze`, `park`, `ui=<control>`. Log tag `Theremin`; every state change logs
 `STATE Sxx[+S10+S11+S18+S06]`.
 
 On the emulator (debug build) an empty injection source is present from the start, so S19 does not appear unless
@@ -180,3 +180,25 @@ where the monitor stands. The SDK has no default occlusion (checked core / sense
   with UnsatisfiedLinkError, so `abiFilters` stays arm64-v8a). Details: `../spatial-app-factory/apps/theremin/build/ui-audit.md`.
 - B19: the home timbre "chip" is a 48 dp `WordButton` now (SpatialUI `Chip` is 32 dp at most); probe name still `timbre_chip`, 96 x 48 dp in zh and en.
 
+
+## v0.1.7 — grab bars that do not shake or orbit, the stand beside the instrument (taste D21)
+
+Headset feedback on v0.1.6: "用手捏住拖动那个 UI 面板…面板会一致抖动，还会orbit 运动…UI 面板原来一开始显示的太高了".
+- Jitter: the bars used the Compose 2D drag detector on the panel itself. Measured on the emulator: even
+  `detectSpatialDragGesture` on an attached panel reports the pointer RELATIVE TO THE MOVING PANEL (axes of the viewer's
+  head), so moving the panel feeds back (+177 / -180 / +177 dp with a still pointer). Now nothing on the panel takes a
+  gesture: each bar has an invisible grab collider 1 cm in front of it (`grab:placePanel` / `grab:standPanel`, child of
+  the panel holder) and the SpatialView's `detectSpatialDragGesture(TargetEntity.any { scene.isGrab(it) })` (PlayStage)
+  measures the drag in its own, fixed frame; `PanelDrag` (pure) = grab point + the pointer's Stage motion, in the panel's
+  plane. Never put a drag detector back on a world panel (QA gate: `grep -rn detectDragGestures app/src` = 0).
+- Orbit: the stand's offset was kept along its own turning right axis. Now the turn is frozen while held; on release the
+  place panel turns to the user (`Follower.faceTo`) and the stand keeps the drop as an offset in the instrument frame
+  (`StandPlacement.offsetFor`), then turns smoothly again.
+- Too high: the 450 x 560 dp stand sat on top of the 0.53 m antenna. It now stands beside the instrument on the volume-loop
+  side (`StandPlacement.SIDE_X` 0.64 m, 0.08 m back, centre 0.30 m over the feet), lifted / lowered once
+  (`liftFor`: top edge under the eyes, centre 10 - 20 deg below the eye line) when it first shows, after 叫回, and after the
+  instrument moved.
+- Logs: `GRIP start|move|end`, per-frame `DRAGF` (1.5 s after the last event), `STAND lift`; `tools/drag_jitter.py` turns a
+  drag log into the still-hand number, `tools/drag_plot.py` draws it. Emulator results and logs: `../spatial-app-factory/apps/theremin/build/ui-audit.md` (v0.1.7).
+- Emulator harness: `MINFPS=30 tools/harness/emu.sh drag …` when two emulators run (this PC reaches ~38 fps).
+- Not verified yet: a real hand pinch-drag on the headset (D21 requires it; the headset was on pc1).

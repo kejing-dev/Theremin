@@ -30,6 +30,9 @@ import io.embodit.theremin.domain.play.RoleInputs
 import io.embodit.theremin.domain.usecase.GrabRules
 import io.embodit.theremin.domain.usecase.PlaceRules
 import io.embodit.theremin.domain.usecase.PlaceUpright
+import io.embodit.theremin.domain.usecase.PanelDrag
+import com.pico.spatial.ui.foundation.gesture.SpatialDragValue
+import com.pico.spatial.ui.geometry.Offset3D
 import io.embodit.theremin.domain.usecase.StandPlacement
 import io.embodit.theremin.platform.ThGraph
 import io.embodit.theremin.platform.ThLog
@@ -144,21 +147,125 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     private var anchoredPose: InstrumentPose? = null
     private var saveJob: Job? = null
 
-    /** The stand's turn (null: face the user at once) and the user's drag offset (right, up; metres). */
+    /**
+     * The stand's turn (null: face the user at once), the user's drag offset (instrument frame, metres; v0.1.7: never
+     * along the panel's own turning axes) and its height correction (null: work it out from the eyes, D21).
+     */
     private var standYaw: Float? = null
-    private var standOffset = 0f to 0f
+    private var standOffset = Vec3.ZERO
+    private var standLift: Float? = null
+    private var standLiftPose: InstrumentPose? = null
+
+    // ---- grab bars (v0.1.7, D21): SDK spatial drag, turn frozen while held, Stage positions
+    private val placeDrag = PanelDrag()
+    private val standDrag = PanelDrag()
+    private var dragLogUntilMs = NEVER
 
     // ---- look
     private var opacity = 1f
     private var near = false
     private var waveStartMs = NEVER
 
-    /** The place panel's handle dragged by ([dxDp], [dyDp]) in the panel's own plane (y down, Compose). */
-    fun dragPanel(dxDp: Float, dyDp: Float) {
-        val slot = rig?.get(PanelSpec.PLACE) ?: return
-        val r = slot.rotation.rotate(Vec3.RIGHT)
-        val u = slot.rotation.rotate(Vec3.UP)
-        follower.moveBy(r * (dxDp * PanelRig.DP_M) - u * (dyDp * PanelRig.DP_M))
+    /** The grab bar of panel [id] (PanelSpec.PLACE / STAND): the SDK drag on its grab collider ([onGrabStart] ...) and the debug drags. */
+    fun grip(id: String): PanelGrip = if (id == PanelSpec.PLACE) placeGrip else standGrip
+
+    private val placeGrip = Grip(PanelSpec.PLACE)
+    private val standGrip = Grip(PanelSpec.STAND)
+
+    /**
+     * v0.1.7 (D21, headset v0.1.6 "面板会一致抖动，还会 orbit 运动"): the pointer's Stage motion moves the panel in the
+     * world from where it was grabbed, in its own plane; its turn is frozen until release; on release the place panel
+     * turns to the user (yaw only) and the stand keeps the result as an instrument-frame offset, then resumes turning.
+     */
+    private inner class Grip(val id: String) : PanelGrip {
+        private val drag = if (id == PanelSpec.PLACE) placeDrag else standDrag
+
+        override fun start(raw: String) {
+            val slot = rig?.get(id)?.takeIf { it.shown } ?: return
+            if (id == PanelSpec.PLACE) follower.grab()
+            val yaw = if (id == PanelSpec.PLACE) follower.pose.yaw else standYaw ?: PlaceUpright.yawOf(slot.rotation.rotate(Vec3(0f, 0f, -1f)), 0f)
+            drag.begin(slot.position, yaw)
+            dragLogUntilMs = SystemClock.elapsedRealtime() + DRAG_LOG_MS
+            ThLog.i("GRIP start panel=$id mode=${drag.mode} pos=${ThLog.pos(slot.position)} yaw=${ThLog.f(Math.toDegrees(yaw.toDouble()).toFloat(), 1)} $raw")
+        }
+
+        override fun moveTo(stageMove: Vec3, raw: String) {
+            if (!drag.active) return
+            drag.moveTo(stageMove)
+            dragLogUntilMs = SystemClock.elapsedRealtime() + DRAG_LOG_MS
+            ThLog.i("GRIP move panel=$id n=${drag.events} moved=${ThLog.pos(stageMove)} placed=${ThLog.pos(rig?.get(id)?.position)} target=${ThLog.pos(drag.target())} $raw")
+        }
+
+        override fun end(cancelled: Boolean) {
+            if (!drag.active) return
+            val at = drag.target()
+            drag.end()
+            val now = SystemClock.elapsedRealtime()
+            dragLogUntilMs = now + DRAG_LOG_MS
+            if (id == PanelSpec.PLACE) {
+                follower.setAt(at)
+                rig?.get(PanelSpec.PLACE)?.place(follower.pose.position, follower.rotation, 1f)
+                if (hasHead) follower.faceTo(head.position, now)
+            } else {
+                val pose = ui.pose
+                if (pose != null) standOffset = StandPlacement.offsetFor(pose, at, StandPlacement.baseLocal(ui.settings.handed == Handed.RIGHT_PITCH), standLift ?: 0f)
+                rig?.get(PanelSpec.STAND)?.place(at, StandPlacement.rotation(drag.yaw), 1f)
+            }
+            ThLog.i("GRIP end panel=$id cancelled=$cancelled events=${drag.events} at=${ThLog.pos(at)} standOffset=${ThLog.pos(standOffset)}")
+        }
+    }
+
+    /** Debug `paneldrag=dx,dy` / `standdrag=dx,dy` (dp, y down, in the panel's plane): the same grip path as the hand, in one step. */
+    private fun debugGrip(id: String, dxDp: Float, dyDp: Float) {
+        val g = grip(id)
+        g.start("debug")
+        g.moveTo((if (id == PanelSpec.PLACE) placeDrag else standDrag).inPlane(dxDp, dyDp), "debug")
+        g.end(false)
+    }
+
+    // ---- the SDK drag on a grab collider (PlayStage): the SpatialView does not move, so its pointer positions are
+    // world positions; the drag sum is converted to Stage by the SDK (same conversion as the taps)
+    private var grabbing: Grip? = null
+    private var grabSumPx = Vec3.ZERO
+
+    /** True for the invisible grab colliders over the panels' bars (the drag detector's target filter). */
+    fun isGrab(entity: com.pico.spatial.core.ecs.Entity): Boolean = runCatching { entity.getName() }.getOrNull()?.startsWith(GRAB_PREFIX) == true
+
+    fun onGrabStart(value: SpatialDragValue, atPx: Offset3D) {
+        val name = value.targetEntity?.let { runCatching { it.getName() }.getOrNull() } ?: return
+        val g = if (name == GRAB_PREFIX + PanelSpec.PLACE) placeGrip else if (name == GRAB_PREFIX + PanelSpec.STAND) standGrip else return
+        grabbing = g
+        grabSumPx = Vec3.ZERO
+        g.start("target=$name at_px=${fmt3(atPx)} ${rawOf(value)}")
+    }
+
+    fun onGrabDrag(value: SpatialDragValue) {
+        val g = grabbing ?: return
+        val a = value.dragAmount
+        grabSumPx += Vec3(a.x, a.y, a.z)
+        val zero = toStage(0f, 0f, 0f) ?: return
+        val now = toStage(grabSumPx.x, grabSumPx.y, grabSumPx.z) ?: return
+        g.moveTo(now - zero, "amount_px=${fmt3(a)} sum_px=${ThLog.pos(grabSumPx)} ${rawOf(value)}")
+    }
+
+    fun onGrabEnd(cancelled: Boolean) {
+        grabbing?.end(cancelled)
+        grabbing = null
+    }
+
+    private fun fmt3(o: Offset3D): String = String.format(Locale.US, "%.1f,%.1f,%.1f", o.x, o.y, o.z)
+
+    private fun rawOf(v: SpatialDragValue): String = "dev=${fmt3(v.inputDevicePose.rawPosition)} kind=${v.interactionKind}"
+
+    override fun dragMode(name: String): String {
+        val m = when (name) {
+            "free" -> PanelDrag.Mode.FREE
+            "freeze" -> PanelDrag.Mode.FREEZE
+            else -> PanelDrag.Mode.PLANE
+        }
+        placeDrag.mode = m
+        standDrag.mode = m
+        return "GRIP mode=$m"
     }
 
     /** "叫回面前": the place panel slides back to its designed place in front of the user (a UI recall, D21). */
@@ -198,7 +305,15 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         this.rig = rig
         for (id in PanelSpec.pool) {
             val (w, h) = PanelSpec.size(id)
-            rig.world(id, w, h).autoFace = false
+            val slot = rig.world(id, w, h)
+            slot.autoFace = false
+            // v0.1.7 (D21): an invisible grab collider just in front of the panel's bar, riding with the panel; the SpatialView's
+            // drag detector takes it (PlayStage), so the drag is measured in a frame that does not move with the panel
+            val (_, hh) = PanelSpec.halfM(id)
+            val grab = Entity().named(GRAB_PREFIX + id)
+            slot.holder.addChild(grab)
+            grab.setLocal(position = Vec3(0f, hh - GRAB_FROM_TOP_M, GRAB_FRONT_M))
+            grab.tapBox(Vec3(GRAB_W_M, GRAB_H_M, 0.004f))
         }
         headTracker.start()
         controller.start()
@@ -373,7 +488,10 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         anchor = null
         anchoredPose = null
         standYaw = null
-        standOffset = 0f to 0f
+        standOffset = Vec3.ZERO
+        standLift = null
+        placeDrag.end()
+        standDrag.end()
         mapper.pose = null
         mapper.armed = false
         headTracker.stop()
@@ -595,9 +713,11 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
                     placedFromDefaultHead = false
                     follower.park(head, now)
                 }
+                if (placeDrag.active) follower.setAt(placeDrag.target())
                 rig[PanelSpec.PLACE]?.place(follower.pose.position, follower.rotation, 1f)
             }
         }
+        dragFrameLog(now)
         layoutLog(state)
         if (!attached) return
         val hs = hands.pollSupport()
@@ -656,27 +776,65 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
      * (smoothly; the user's position from [userAt], orientation only), upright (D9), moved by its handle, called back by 叫回.
      */
     private fun placeStand(state: PlayUiState, rig: PanelRig, dt: Float) {
+        // held by its bar (v0.1.7): where the hand put it, the turn frozen
+        if (standDrag.active) {
+            rig[PanelSpec.STAND]?.place(standDrag.target(), StandPlacement.rotation(standDrag.yaw), 1f)
+            return
+        }
         val pose = (if (dragging) dragPose else null) ?: state.pose ?: return
         val (_, hh) = PanelSpec.halfM(PanelSpec.STAND)
-        val base = StandPlacement.base(pose, hh)
-        val at = StandPlacement.position(base, standYaw ?: pose.yaw, standOffset)
+        val local = StandPlacement.baseLocal(state.settings.handed == Handed.RIGHT_PITCH) + standOffset
+        // height from the eyes once (D21): when it first shows, after 叫回, and when the instrument has moved (not while it is
+        // being moved, not after the user placed the stand by hand); never per frame: the stand does not follow the head
+        val relift = standLift == null || (!dragging && standOffset == Vec3.ZERO && standLiftPose != pose)
+        if (relift && hasHead) {
+            val lift = StandPlacement.liftFor(StandPlacement.position(pose, local, 0f), head.position, hh)
+            standLift = lift
+            standLiftPose = pose
+            val c = StandPlacement.position(pose, local, lift)
+            ThLog.i("STAND lift=${ThLog.f(lift)} centre=${ThLog.pos(c)} top=${ThLog.f(c.y + hh)} eye=${ThLog.f(head.position.y)} drop_deg=${ThLog.f(StandPlacement.dropDeg(c, head.position), 1)}")
+        }
+        val at = StandPlacement.position(pose, local, standLift ?: 0f)
         val target = userAt()?.let { StandPlacement.yawTo(at, it, pose.yaw) } ?: pose.yaw
         val yaw = standYaw?.let { StandPlacement.turn(it, target, dt) } ?: target
         standYaw = yaw
-        rig[PanelSpec.STAND]?.place(StandPlacement.position(base, yaw, standOffset), StandPlacement.rotation(yaw), 1f)
+        rig[PanelSpec.STAND]?.place(at, StandPlacement.rotation(yaw), 1f)
     }
 
-    /** The stand's handle dragged by ([dxDp], [dyDp]) in its own plane (y down, Compose). */
-    override fun dragStand(dxDp: Float, dyDp: Float) {
-        val (ox, oy) = standOffset
-        standOffset = StandPlacement.clampOffset((ox + dxDp * PanelRig.DP_M) to (oy - dyDp * PanelRig.DP_M))
-    }
+    /** Debug `standdrag=dx,dy` (dp, y down): the stand's grab bar, through the same grip as the hand. */
+    override fun dragStand(dxDp: Float, dyDp: Float) = debugGrip(PanelSpec.STAND, dxDp, dyDp)
 
-    /** "叫回": the stand back over the instrument, facing the user at once. */
+    /** "叫回": the stand back beside the instrument at its designed height, facing the user at once. */
     override fun recallStand() {
-        ThLog.i("STAND recall from offset=${ThLog.f(standOffset.first)},${ThLog.f(standOffset.second)}")
-        standOffset = 0f to 0f
+        ThLog.i("STAND recall from offset=${ThLog.pos(standOffset)}")
+        standDrag.end()
+        standOffset = Vec3.ZERO
         standYaw = null
+        standLift = null
+    }
+
+    /** While a grab bar is held and [DRAG_LOG_MS] after: one line per frame with each panel's Stage position and yaw (the < 2 mm still-hand check). */
+    private fun dragFrameLog(now: Long) {
+        if (now > dragLogUntilMs) return
+        val rig = rig ?: return
+        for (id in PanelSpec.pool) {
+            val slot = rig[id]?.takeIf { it.shown } ?: continue
+            val held = (if (id == PanelSpec.PLACE) placeDrag else standDrag).active
+            val yaw = Math.toDegrees(PlaceUpright.yawOf(slot.rotation.rotate(Vec3(0f, 0f, -1f)), 0f).toDouble()).toFloat()
+            ThLog.i("DRAGF t=$now panel=$id held=$held pos=${ThLog.pos5(slot.position)} yaw=${ThLog.f(yaw, 2)}")
+        }
+    }
+
+    /** Debug `standinfo`: where the stand is against the eyes (D21: top under the eyes, centre 10 - 20 degrees down). */
+    override fun standInfo(): String {
+        val slot = rig?.get(PanelSpec.STAND)?.takeIf { it.shown } ?: return "STANDINFO not shown"
+        val (_, hh) = PanelSpec.halfM(PanelSpec.STAND)
+        val c = slot.position
+        if (!hasHead) return "STANDINFO centre=${ThLog.pos(c)} head=none"
+        val eye = head.position
+        val inst = ui.pose?.center
+        return "STANDINFO centre=${ThLog.pos(c)} top=${ThLog.f(c.y + hh)} eye=${ThLog.f(eye.y)} top_below_eye_m=${ThLog.f(eye.y - c.y - hh)} drop_deg=${ThLog.f(StandPlacement.dropDeg(c, eye), 1)} " +
+            "from_instrument=${inst?.let { ThLog.pos(c - it) } ?: "none"} offset=${ThLog.pos(standOffset)} lift=${ThLog.f(standLift ?: 0f)}"
     }
 
     private fun standPose(): Pair<Vec3, Quat4>? {
@@ -1030,7 +1188,7 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
     }
 
     override fun dragPanelDebug(dxDp: Float, dyDp: Float): String {
-        dragPanel(dxDp, dyDp)
+        debugGrip(PanelSpec.PLACE, dxDp, dyDp)
         return "PANEL drag by ${ThLog.f(dxDp)},${ThLog.f(dyDp)} dp -> ${ThLog.pos(follower.pose.position)}"
     }
 
@@ -1083,6 +1241,14 @@ class PlayScene(private val vm: PlayViewModel, private val sink: (PlayEvent) -> 
         /** q3-1 (D1): the cold-start timings, all from the process start. */
         private val LAYOUT_MARKS_MS = longArrayOf(1000L, 3000L, 5000L)
         private const val HEAD_WAIT_MS = 1200L
+        private const val DRAG_LOG_MS = 1500L
+        const val GRAB_PREFIX = "grab:"
+
+        /** Grab collider: over the 48 dp bar row (its centre 16 + 24 dp under the panel's top edge), 0.20 x 0.04 m, 1 cm in front. */
+        private const val GRAB_FROM_TOP_M = 40f * PanelRig.DP_M
+        private const val GRAB_W_M = 0.20f
+        private const val GRAB_H_M = 0.04f
+        private const val GRAB_FRONT_M = 0.01f
         private const val PANEL_LEAD_MS = 700L
         private const val PANEL_LEAD_FRAMES = 4L
         private const val PANEL_WAIT_MAX_MS = 6000L

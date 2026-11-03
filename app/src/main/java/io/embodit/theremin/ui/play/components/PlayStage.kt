@@ -8,6 +8,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.foundation.gesture.TargetEntity
+import com.pico.spatial.ui.foundation.gesture.detectSpatialDragGesture
 import com.pico.spatial.ui.foundation.gesture.detectSpatialTapGesture
 import io.embodit.theremin.ui.play.PlayEvent
 import io.embodit.theremin.ui.play.PlayUiState
@@ -33,13 +34,24 @@ internal fun PlayStage(state: PlayUiState, vm: PlayViewModel, scene: PlayScene, 
                 .fillMaxSize()
                 .pointerInput(Unit) {
                     detectSpatialTapGesture(context = context, targetedToEntity = TargetEntity.any()) { value -> scene.onSpatialTap(value) }
+                }
+                .pointerInput(Unit) {
+                    // v0.1.7 (D21): the panels' grab bars. Aimed at their grab colliders and measured here, on the SpatialView that
+                    // never moves: the same detector on the moving panel reports the pointer relative to the panel (feedback jitter)
+                    detectSpatialDragGesture(
+                        context = context,
+                        targetedToEntity = TargetEntity.any { scene.isGrab(it) },
+                        onDragStart = { at, value -> scene.onGrabStart(value, at) },
+                        onDragEnd = { scene.onGrabEnd(cancelled = false) },
+                        onDragCancel = { scene.onGrabEnd(cancelled = true) },
+                    ) { value -> scene.onGrabDrag(value) }
                 },
         attachments = {
             AttachmentPanel(PanelSpec.PLACE) {
-                PoolPanel(PanelSpec.PLACE, scene) { inView -> PlacePanel(state = state, filled = inView, onEvent = onEvent, onDrag = scene::dragPanel, onRecall = scene::recallPanel) }
+                PoolPanel(PanelSpec.PLACE, scene) { inView -> PlacePanel(state = state, filled = inView, onEvent = onEvent, onRecall = scene::recallPanel) }
             }
             AttachmentPanel(PanelSpec.STAND) {
-                PoolPanel(PanelSpec.STAND, scene) { inView -> StandPanel(state = state, vm = vm, filled = inView, onEvent = onEvent, onDrag = scene::dragStand, onRecall = scene::recallStand) }
+                PoolPanel(PanelSpec.STAND, scene) { inView -> StandPanel(state = state, vm = vm, filled = inView, onEvent = onEvent, onRecall = scene::recallStand) }
             }
         },
         update = { _, attachments ->

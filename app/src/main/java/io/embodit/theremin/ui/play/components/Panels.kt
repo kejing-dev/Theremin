@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -71,12 +70,12 @@ import kotlin.math.roundToInt
 
 /** The place panel, 400 x 250 dp, set once in front of the viewer (upright, D9 / D21) until the instrument stands. */
 @Composable
-internal fun PlacePanel(state: PlayUiState, filled: Boolean, onEvent: (PlayEvent) -> Unit, onDrag: (Float, Float) -> Unit, onRecall: () -> Unit) {
+internal fun PlacePanel(state: PlayUiState, filled: Boolean, onEvent: (PlayEvent) -> Unit, onRecall: () -> Unit) {
     val (w, h) = PanelSpec.PLACE_SIZE
     Glass(w.dp, h.dp, refreshKey = listOf(filled, state.room, state.exitConfirm, state.language())) {
         if (!filled) return@Glass
         // D21: the panel stays where it is in the world; the handle moves it, 叫回面前 brings it back
-        DragHandle(onDrag)
+        DragHandle()
         TitleRow(
             title = rs(R.string.place_title),
             trailing = { WordButton("place_recall", rs(R.string.action_recall), onRecall, minWidth = 112.dp, height = 48.dp) },
@@ -116,14 +115,14 @@ internal fun ExitConfirmRow(onEvent: (PlayEvent) -> Unit) {
 
 /** The music stand, 450 x 320 dp on the instrument: one page at a time, the hint strip on top. */
 @Composable
-internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, onEvent: (PlayEvent) -> Unit, onDrag: (Float, Float) -> Unit, onRecall: () -> Unit) {
+internal fun StandPanel(state: PlayUiState, vm: PlayViewModel, filled: Boolean, onEvent: (PlayEvent) -> Unit, onRecall: () -> Unit) {
     val (w, h) = PanelSpec.STAND_SIZE
     Glass(w.dp, h.dp, padding = 14.dp, spacing = 6.dp, refreshKey = listOf(filled, state.page, state.room, state.unavailable, state.library, state.language(), state.settings.handed, state.exitConfirm)) {
         if (!filled) return@Glass
         // v0.1.4: the stand rides above the instrument facing the user; the bar moves it, 叫回 puts it back (D21)
         Row(modifier = Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Spacer(Modifier.width(80.dp))
-            DragHandle(onDrag, Modifier.weight(1f))
+            DragHandle(Modifier.weight(1f))
             WordButton("stand_recall", rs(R.string.action_recall_stand), onRecall, minWidth = 80.dp, height = 48.dp)
         }
         HintStrip(state, onEvent)
@@ -673,17 +672,15 @@ internal fun Segments(items: List<Pair<String, String>>, selected: Int, onSelect
     }
 }
 
-/** Grab bar on top of a world-fixed panel: dragging it (gaze + pinch, or the controller ray) moves the panel in its own plane. */
+/**
+ * Grab bar on top of a world panel (taste D21, v0.1.7): drawn here, grabbed through the invisible grab collider the
+ * scene keeps 1 cm in front of it (PlayScene GRAB_*), whose drag the SpatialView measures (PlayStage). No gesture
+ * detector on the panel itself: deltas taken on the moving panel are relative to it and feed its motion back
+ * (the v0.1.6 headset jitter). 48 dp row (B19).
+ */
 @Composable
-private fun DragHandle(onDrag: (Float, Float) -> Unit, modifier: Modifier = Modifier.fillMaxWidth()) {
-    val density = androidx.compose.ui.platform.LocalDensity.current.density
-    androidx.compose.foundation.layout.Box(
-        modifier =
-            modifier
-                .height(20.dp)
-                .pointerInput(Unit) { detectDragGestures { change, d -> change.consume(); onDrag(d.x / density, d.y / density) } },
-        contentAlignment = Alignment.Center,
-    ) {
+private fun DragHandle(modifier: Modifier = Modifier.fillMaxWidth()) {
+    androidx.compose.foundation.layout.Box(modifier = modifier.height(48.dp).probe("grab_bar"), contentAlignment = Alignment.Center) {
         androidx.compose.foundation.layout.Box(Modifier.size(96.dp, 6.dp).clip(CircleShape).background(PicoTheme.colorScheme.labelTertiary))
     }
 }
